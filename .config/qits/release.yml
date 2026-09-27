@@ -1,0 +1,257 @@
+archetype: daemon
+artifacts:
+  - { type: daemon, name: qits-ci-runner, sbom: out/sbom.json }
+  # THE PIN AND THE PROTOCOL, IN ONE JAR — qits-ci-daemon's arrangement, for the same reason.
+  # `ci-runner-protocol` is the wire contract qits-ci and the runner both speak, and it carries
+  # `CiRunnerBinary.VERSION`, filtered from `${project.version}` at build time, so the jar's version
+  # IS the version of the binary published beside it. qits-ci pins this coordinate in its pom and
+  # renders the install script's download from the constant.
+  #
+  # AND IT CARRIES NO `sbom:`, WHICH IS NOT THE DOCUMENT GOING MISSING. The composed postlude runs
+  # in ONE step — the last one that builds — and a step container shares nothing with the next: the
+  # jar's document is written by `makeBom` in the maven step below, whose files the builder step has
+  # never seen. So the jar submits its own document from the container that produced it.
+  - { type: maven, name: "eu.wohlben.qits:qits-ci-runner-protocol" }
+
+# THIS FILE CANNOT BOOTSTRAP ITSELF. The publish run is composed from `main` and the gate reads the
+# tag, so on a repository whose `main` has never carried a release.yml the first release has nothing
+# to compose from. A person lands this file on `main` by hand once; every later change to it rides a
+# release request like any other.
+#
+# THE QA HALF IS THIS REPOSITORY'S, as it is qits-ci-daemon's, and for three things a compile does
+# not do: the JVM suite; a smoke probe that really STARTS A CONTAINER on the built binary and asserts
+# it refuses to run with no environment (exit 2) — which needs a docker socket, hence `docker: true`
+# where the archetype's `build: true` gives a builder and no socket; and the install-script contract
+# test, which runs a copy of the script qits-ci renders against stubs and needs nothing but a shell.
+release-request:
+  - image: qits/build-images/maven-base:latest
+    timeout-seconds: 1800
+    script: |
+      export QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}"
+      ./mvnw -B -ntp -s .qits-maven-settings.xml verify
+
+  - image: qits/build-images/ci-base:latest
+    docker: true
+    timeout-seconds: 3600
+    script: |
+      maven_root="${QITS_MAVEN_REGISTRY_URL%/}"
+      musl_url=$(sed -n 's/^ARG MUSL_URL=//p' docker/Dockerfile.musl-builder)
+      zlib_url=$(sed -n 's/^ARG ZLIB_URL=//p' docker/Dockerfile.musl-builder)
+      : "${musl_url:?docker/Dockerfile.musl-builder declares no ARG MUSL_URL}"
+      : "${zlib_url:?docker/Dockerfile.musl-builder declares no ARG ZLIB_URL}"
+      musl_url="$maven_root${musl_url#*/artifacts/maven/maven}"
+      zlib_url="$maven_root${zlib_url#*/artifacts/maven/maven}"
+      # THE TOOLCHAIN TAG IS A HASH OF ITS INPUTS, NOT qits-ci-daemon's BARE `jdk-25`. Two
+      # repositories now carry a copy of docker/Dockerfile.musl-builder, and a shared mutable tag is
+      # exactly what one's push could overwrite between the other's push and its pull. The hash is
+      # the archetype's derivation (release-archetypes/daemon.yml's header argues it): identical
+      # inputs land on the identical tag, so the two copies share one image while they agree and
+      # stop sharing the moment one of them changes.
+      builder_tag=$( { cat docker/Dockerfile.musl-builder; printf '%s\n%s\n' "$musl_url" "$zlib_url"; } | sha256sum | cut -c1-16 )
+      builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25-$builder_tag"
+      buildctl build --frontend dockerfile.v0 \
+        --local context=docker --local dockerfile=docker \
+        --opt filename=Dockerfile.musl-builder \
+        --opt build-arg:MUSL_URL="$musl_url" \
+        --opt build-arg:ZLIB_URL="$zlib_url" \
+        --output "type=image,name=$builder,push=true"
+      # BYTE-IDENTICAL TO THE RELEASE SLOT'S EXPORT. Change one, change the other.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt target=binary \
+        --opt build-arg:BUILDER_IMAGE="$builder" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --output type=local,dest=out
+      # The probe runs the binary with NO environment and asserts exit 2 — the one line an operator
+      # who forgot the env file gets. The suite cannot see an SmallRye startup failure; this can.
+      probe=$(docker create alpine:3 /qits-ci-runner)
+      docker cp out/qits-ci-runner "$probe:/qits-ci-runner"
+      docker start -a "$probe" || true
+      code=$(docker inspect -f '{{.State.ExitCode}}' "$probe")
+      docker rm "$probe" >/dev/null
+      [ "$code" = 2 ] || { echo "a runner started with no environment exited $code, expected 2" >&2; exit 1; }
+      echo "qits-ci-runner built: $(sha256sum out/qits-ci-runner | cut -d' ' -f1)"
+
+  # THE INSTALL-SCRIPT CONTRACT (qits-464). qits-ci renders the script a person pastes on a runner
+  # host from its own template; scripts/fixtures/runner-install.sh is a copy of that rendering, and
+  # this step runs it offline in a temp root with docker, id, useradd, systemctl and curl stubbed on
+  # PATH. It asserts what the unit file beside it (packaging/qits-ci-runner.service) and the binary's
+  # env contract need — see the script's header. Nothing here needs docker or a network.
+  - image: qits/build-images/ci-base:latest
+    timeout-seconds: 300
+    script: |
+      sh scripts/test-install-contract.sh
+
+# THE RELEASE HALF IS THIS REPOSITORY'S TOO: two artifacts of two kinds leave this tree, and `daemon`
+# publishes the binary and nothing else. The first step below IS the archetype's, apart from
+# spelling the one name it would have read back out of `artifacts:`; the second is the
+# pin-and-protocol jar, deliberately AFTER the binary publish — the jar is what tells qits-ci which
+# binary to hand out, so a jar that resolves before its binary is in the store is a pin pointing at
+# nothing.
+release:
+  - image: qits/build-images/ci-base:latest
+    build: true
+    timeout-seconds: 3600
+    script: |
+      maven_root="${QITS_MAVEN_REGISTRY_URL%/}"
+      musl_url=$(sed -n 's/^ARG MUSL_URL=//p' docker/Dockerfile.musl-builder)
+      zlib_url=$(sed -n 's/^ARG ZLIB_URL=//p' docker/Dockerfile.musl-builder)
+      : "${musl_url:?docker/Dockerfile.musl-builder declares no ARG MUSL_URL}"
+      : "${zlib_url:?docker/Dockerfile.musl-builder declares no ARG ZLIB_URL}"
+      musl_url="$maven_root${musl_url#*/artifacts/maven/maven}"
+      zlib_url="$maven_root${zlib_url#*/artifacts/maven/maven}"
+      # The QA step's derivation, byte for byte: the same tree names the same tag in both phases,
+      # so BUILDER_IMAGE is the same string and the native compile below is a cache hit.
+      builder_tag=$( { cat docker/Dockerfile.musl-builder; printf '%s\n%s\n' "$musl_url" "$zlib_url"; } | sha256sum | cut -c1-16 )
+      builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25-$builder_tag"
+      buildctl build --frontend dockerfile.v0 \
+        --local context=docker --local dockerfile=docker \
+        --opt filename=Dockerfile.musl-builder \
+        --opt build-arg:MUSL_URL="$musl_url" \
+        --opt build-arg:ZLIB_URL="$zlib_url" \
+        --output "type=image,name=$builder,push=true"
+      # THE QA PIPELINE'S BUILD, BYTE FOR BYTE.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt target=binary \
+        --opt build-arg:BUILDER_IMAGE="$builder" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --output type=local,dest=out
+      # THE DOCUMENT COMES OUT OF THE SAME BUILD AS THE BINARY — the reactor exists only in there.
+      # Build args byte-identical to the export above, so every layer is a cache hit.
+      #
+      # GENERATED, NEVER SUBMITTED — the postlude PUTs it for the artifact that declares it.
+      buildctl build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=docker \
+        --opt target=sbom \
+        --opt build-arg:BUILDER_IMAGE="$builder" \
+        --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+        --output type=local,dest=out
+      # The export loses the mode bit, so the chmod is not optional: a static binary that cannot be
+      # executed is a green build that publishes nothing runnable.
+      chmod +x out/qits-ci-runner
+      qits-publish daemon submit \
+        --name qits-ci-runner --version "$QITS_VERSION" --file out/qits-ci-runner
+
+  - image: qits/build-images/maven-base:latest
+    timeout-seconds: 1800
+    script: |
+      # ALREADY PUBLISHED IS A SKIP, NOT A FAILURE, and the parent is checked beside the child: a
+      # `-am` deploy writes both, and a run that resolved only one of them has published half a
+      # coordinate. Re-running a maven deploy is a no-op; re-running it against an occupied
+      # coordinate is not, so the guard stays.
+      if curl -fsS -o /dev/null \
+        "$QITS_MAVEN_REGISTRY_URL/eu/wohlben/qits/qits-ci-runner-protocol/$QITS_VERSION/qits-ci-runner-protocol-$QITS_VERSION.pom" \
+        && curl -fsS -o /dev/null \
+          "$QITS_MAVEN_REGISTRY_URL/eu/wohlben/qits/$QITS_VERSION/qits-$QITS_VERSION.pom"; then
+        echo "qits-ci-runner-protocol $QITS_VERSION and its parent are already published — skipping"
+        exit 0
+      fi
+      # THE REACTOR ROOT RIDES ALONG ON `-am` AND IS DELIBERATELY NOT DECLARED: a `pom` parent
+      # carries no bytes worth an SBOM, and it has to be deployed or the child coordinate resolves
+      # to nothing.
+      # THE PUBLISH CREDENTIAL, AND IT IS AN HTTP HEADER RATHER THAN A USER/PASSWORD. The deployment
+      # repository id is `qits` — what -DaltDeploymentRepository names — and no settings file on this
+      # estate declares a <server> with that id. Maven does not authenticate preemptively either, so
+      # a <username>/<password> pair would never be sent; the credential has to arrive as an
+      # Authorization header, which is what the generated -gs settings below carry.
+      #
+      # MINTED HERE rather than read from the $QITS_PUBLISH_TOKEN qits-ci also injects: that one is
+      # minted when the container starts, and the mint's TTL and this step's timeout are the same
+      # number (3600s) with a whole build in between.
+      #
+      # THE HTTP BLOCKER IS RE-DECLARED because `-gs` REPLACES Maven's own conf/settings.xml, and
+      # `maven-default-http-blocker` is the only live element in it. Leaving it out would silently
+      # drop the blocker for the whole deploy — a loosening nobody asked for.
+      #
+      # THE FILE HOLDS A BEARER, so: `umask 077`, never `cat`ed, and removed after the deploy. Do
+      # not add `-X` to these commands for the same reason — Maven's debug log prints the effective
+      # settings, token and all. A minted token is base64url and dots, so nothing in it needs XML
+      # escaping.
+      #
+      # THE PATH IS THIS RECIPE'S OWN, AND THAT IS THE FIX FOR A LIVE FAILURE. qits-ci's container
+      # bootstrap (CiDaemonLauncher.BOOTSTRAP) writes /tmp/qits-deploy-settings.xml when the step
+      # container starts and APPENDS `-gs /tmp/qits-deploy-settings.xml` to MAVEN_ARGS, which every
+      # maven in the step then inherits. This step used to write that very path and then `rm -f` it
+      # after the deploy — deleting the platform's file — so the makeBom below started with
+      # MAVEN_ARGS still naming a file that was gone and died on:
+      #
+      #     The specified global settings file does not exist: /tmp/qits-deploy-settings.xml
+      #
+      # Every release on this recipe hit it. The collision goes away by writing somewhere the
+      # platform does not own.
+      #
+      # MAVEN_ARGS BEATS THE COMMAND LINE — measured on 3.9.12, and said so in CiDaemonLauncher — so
+      # on a current qits-ci this `-gs` is inert and the ambient file is what the deploy uses. It
+      # stays anyway: this file is read at main and runs against a tag on whatever qits-ci the
+      # estate is deployed with, and on one that injects nothing this is the deploy's only
+      # credential.
+      #
+      # AND IT DEGRADES TO ANONYMOUS — this script is read at main and runs against a tag on whatever
+      # qits-ci is deployed, so an absent command or a failed mint leaves the deploy byte-for-byte
+      # the one that worked yesterday rather than sending an empty bearer or aborting the step.
+      deploy_settings=""
+      deploy_token=""
+      if [ -n "${QITS_PUBLISH_TOKEN_COMMAND:-}" ] \
+        && command -v "$QITS_PUBLISH_TOKEN_COMMAND" >/dev/null 2>&1; then
+        deploy_token=$("$QITS_PUBLISH_TOKEN_COMMAND" 2>/dev/null) || deploy_token=""
+      fi
+      #
+      # `printf` AND NOT A HEREDOC, which is a YAML constraint rather than a shell preference: this
+      # script is a block scalar, its indentation is set by its first line, and a heredoc body has
+      # to sit at the emitted column zero — which is BELOW that indent and silently ends the
+      # scalar. Measured: the parser stops at `<settings` and the recipe no longer loads. Quoted
+      # printf arguments can be indented with the code around them.
+      if [ -n "$deploy_token" ]; then
+        ( umask 077
+          printf '%s\n' \
+            '<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">' \
+            '  <servers>' \
+            '    <server>' \
+            '      <id>qits</id>' \
+            '      <configuration>' \
+            '        <httpHeaders>' \
+            '          <property>' \
+            '            <name>Authorization</name>' \
+            "            <value>Bearer $deploy_token</value>" \
+            '          </property>' \
+            '        </httpHeaders>' \
+            '      </configuration>' \
+            '    </server>' \
+            '  </servers>' \
+            '  <mirrors>' \
+            '    <mirror>' \
+            '      <id>maven-default-http-blocker</id>' \
+            '      <mirrorOf>external:http:*</mirrorOf>' \
+            '      <url>http://0.0.0.0/</url>' \
+            '      <blocked>true</blocked>' \
+            '    </mirror>' \
+            '  </mirrors>' \
+            '</settings>' > /tmp/qits-recipe-deploy-settings.xml )
+        deploy_settings="-gs /tmp/qits-recipe-deploy-settings.xml"
+      fi
+      QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+      QITS_MAVEN_AUTH_USR="${QITS_COMMISSIONED_CLIENT_ID-}" \
+      QITS_MAVEN_AUTH_PSW="${QITS_COMMISSIONED_CLIENT_SECRET-}" \
+      ./mvnw -B -ntp -s .qits-maven-settings.xml $deploy_settings -pl ci-runner-protocol -am deploy -DskipTests \
+        -Dqits.maven.repository.url="$QITS_MAVEN_REGISTRY_URL" \
+        -DaltDeploymentRepository="qits::default::$QITS_MAVEN_REGISTRY_URL"
+      # The bearer stops existing the moment it stops being needed. Hygiene rather than a
+      # guarantee: a failed deploy aborts under the composer's `set -e` and leaves the file, and
+      # the step container is destroyed either way. The makeBom that follows publishes nothing.
+      #
+      # ONLY THIS RECIPE'S OWN FILE. The platform's /tmp/qits-deploy-settings.xml is named by an
+      # exported MAVEN_ARGS for the whole step, so removing it here removes the makeBom's own
+      # settings file out from under it — see the block above.
+      rm -f /tmp/qits-recipe-deploy-settings.xml
+      QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
+      ./mvnw -B -ntp -s .qits-maven-settings.xml -pl ci-runner-protocol -DskipTests \
+        -Dqits.maven.repository.url="$QITS_MAVEN_REGISTRY_URL" \
+        org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeBom \
+        -DoutputFormat=json -DoutputName=sbom -DschemaVersion=1.6
+      # SUBMITTED HERE BECAUSE THE POSTLUDE CANNOT REACH IT — see the artifact's comment above. The
+      # CLI is on this step's PATH like any release step's, and its idempotency policy is the one
+      # the postlude runs, so a re-fired release resubmitting identical bytes is still green.
+      qits artifacts publish sbom submit \
+        --type maven --name "eu.wohlben.qits:qits-ci-runner-protocol" \
+        --version "$QITS_VERSION" --file ci-runner-protocol/target/sbom.json
