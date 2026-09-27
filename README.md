@@ -113,7 +113,7 @@ A healthy runner never exits; systemd restarts it after any of these (`RestartSe
 | `docker/` | `Dockerfile` (the native build, exported as a file) and `Dockerfile.musl-builder` (the toolchain; a copy of qits-ci-daemon's). |
 | `packaging/qits-ci-runner.service` | The systemd unit. The install script embeds it verbatim. |
 | `scripts/test-install-contract.sh` | Runs the install script offline against stubs and asserts its contract. |
-| `scripts/fixtures/runner-install.sh` | A rendering of qits-ci-service's install-script template (today a placeholder that follows the contract). |
+| `scripts/fixtures/runner-install.sh` | A rendering of qits-ci-service's install-script template (copied from `service/target/runner-install.fixture.sh`, which `RunnerInstallScriptTest` writes). |
 
 Inside `ci-runner/`, `Main` is the only CDI bean. It resolves configuration and news up plain classes:
 `RunnerMain` (the flow), `Registration` and `Bearer` (identity), `ControlSocket` (the connection),

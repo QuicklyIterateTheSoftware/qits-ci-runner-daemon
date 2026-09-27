@@ -1,62 +1,73 @@
 #!/bin/sh
-# PLACEHOLDER FIXTURE — a hand-written stand-in for what qits-ci-service renders from
-# service/src/main/resources/runner-install.sh.tmpl, until that template exists and this file is
-# refreshed from one real rendering of it. It follows the contract scripts/test-install-contract.sh
-# states in its header (and README.md repeats), and nothing more: the test runs whatever file sits
-# here, so the day the real rendering replaces this one, the contract is checked against the real
-# thing.
+# Installs qits-ci-runner on this host as a systemd service, set up as one qits-ci runner.
+# For x86-64 Linux with docker, run as root: `sudo sh <this file>`, or paste it into a root shell.
 #
-# Rendered values: a real rendering carries the runner's own; these are fixture values.
+# It carries a one-time registration token, so treat it as a secret until the runner has registered.
+# Running it again with a fresh token — the CI UI's "replace registration token" — keeps the binary
+# already installed, rewrites the env file and restarts the unit; the runner registers again by
+# itself when the token differs from the one it registered with, so its state dir is left alone.
+#
+# Rendered by qits-ci-service from service/src/main/resources/runner-install.sh.tmpl. Every path it
+# writes is under ${QITS_INSTALL_ROOT:-} — empty on a real host — and every tool comes from PATH:
+# that is what lets qits-ci-runner-daemon's scripts/test-install-contract.sh run a rendering against
+# stubs in a temp root.
 set -eu
 
-QITS_CI_RUNNER_URL='https://ci.dev.example.test'
-QITS_CI_RUNNER_ID='runner-fixture-1'
-QITS_CI_RUNNER_REGISTRATION_TOKEN='qits-reg-FIXTURE-TOKEN-DO-NOT-PRINT'
+QITS_CI_RUNNER_URL='http://dev-qits-ci:8080'
+QITS_CI_RUNNER_ID='00000000-0000-0000-0000-000000000001'
+QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_FIXTURE'
 QITS_CI_RUNNER_SLOTS='2'
-QITS_CI_RUNNER_BINARY_URL='https://artifacts.dev.example.test/artifacts/daemons/qits-ci-runner/1.0.0-SNAPSHOT'
+QITS_CI_RUNNER_BINARY_URL='http://dev-qits-artifacts:8080/artifacts/daemons/qits-ci-runner/0.0.0-fixture'
+QITS_CI_RUNNER_STATE_DIR='/var/lib/qits-ci-runner'
 
 root="${QITS_INSTALL_ROOT:-}"
 bin="$root/usr/local/bin/qits-ci-runner"
 envfile="$root/etc/qits-ci-runner.env"
 unit="$root/etc/systemd/system/qits-ci-runner.service"
-state_dir='/var/lib/qits-ci-runner'
 
-fail() { echo "qits-ci-runner install: $*" >&2; exit 1; }
+refuse() {
+  echo "qits-ci-runner install: $*" >&2
+  exit 1
+}
 
-[ "$(id -u)" = 0 ] || fail "run this as root (sudo sh, or paste it into a root shell)"
-command -v docker >/dev/null 2>&1 || fail "docker is not installed on this host"
-docker info >/dev/null 2>&1 || fail "docker is installed but not answering; start it first"
-command -v systemctl >/dev/null 2>&1 || fail "this host has no systemd"
+[ "$(id -u)" = 0 ] || refuse "run this as root, with sudo sh or from a root shell."
+command -v docker >/dev/null 2>&1 || refuse "docker is not on PATH; install docker first."
 
 if ! id qits-ci-runner >/dev/null 2>&1; then
-  useradd --system --no-create-home --shell /usr/sbin/nologin --groups docker qits-ci-runner
-  echo "created the system user qits-ci-runner (in group docker)"
+  useradd --system --no-create-home --shell /usr/sbin/nologin -G docker qits-ci-runner
 fi
 
+# A binary already here is a re-run — a rotated token — and is kept: the version is the one this
+# host already runs, and re-downloading it under a running unit would buy nothing.
+rerun=no
 if [ -x "$bin" ]; then
-  echo "qits-ci-runner is already installed at /usr/local/bin/qits-ci-runner; keeping it"
+  rerun=yes
 else
   mkdir -p "$root/usr/local/bin"
-  curl -fsSL --retry 3 -o "$bin.tmp" "$QITS_CI_RUNNER_BINARY_URL" || fail "could not download the runner"
-  chmod 0755 "$bin.tmp"
-  mv "$bin.tmp" "$bin"
-  echo "installed /usr/local/bin/qits-ci-runner"
+  curl -fsSL -H "Authorization: Bearer $QITS_CI_RUNNER_REGISTRATION_TOKEN" \
+    -o "$bin.part" "$QITS_CI_RUNNER_BINARY_URL" \
+    || { rm -f "$bin.part"; refuse "could not download the runner binary from $QITS_CI_RUNNER_BINARY_URL."; }
+  chmod 755 "$bin.part"
+  mv "$bin.part" "$bin"
 fi
 
 mkdir -p "$root/etc"
-( umask 077
+(
+  umask 077
   printf '%s\n' \
     "QITS_CI_RUNNER_URL=$QITS_CI_RUNNER_URL" \
     "QITS_CI_RUNNER_ID=$QITS_CI_RUNNER_ID" \
     "QITS_CI_RUNNER_REGISTRATION_TOKEN=$QITS_CI_RUNNER_REGISTRATION_TOKEN" \
-    "QITS_CI_RUNNER_STATE_DIR=$state_dir" \
-    "QITS_CI_RUNNER_SLOTS=$QITS_CI_RUNNER_SLOTS" > "$envfile.tmp" )
-chmod 0600 "$envfile.tmp"
-mv "$envfile.tmp" "$envfile"
-echo "wrote /etc/qits-ci-runner.env (mode 0600)"
+    "QITS_CI_RUNNER_STATE_DIR=$QITS_CI_RUNNER_STATE_DIR" \
+    "QITS_CI_RUNNER_SLOTS=$QITS_CI_RUNNER_SLOTS" > "$envfile.part"
+)
+chmod 600 "$envfile.part"
+mv "$envfile.part" "$envfile"
 
+# BYTE-IDENTICAL to qits-ci-runner-daemon's packaging/qits-ci-runner.service, and changed together
+# with it: that repository's scripts/test-install-contract.sh compares the two.
 mkdir -p "$root/etc/systemd/system"
-cat > "$unit" <<'QITS_UNIT'
+cat > "$unit" <<'QITS_CI_RUNNER_UNIT'
 # qits-ci-runner — the systemd unit the install script writes to /etc/systemd/system.
 #
 # CHANGE IT TOGETHER WITH qits-ci-service's service/src/main/resources/runner-install.sh.tmpl, which
@@ -87,12 +98,13 @@ StateDirectoryMode=0700
 
 [Install]
 WantedBy=multi-user.target
-QITS_UNIT
-echo "wrote /etc/systemd/system/qits-ci-runner.service"
+QITS_CI_RUNNER_UNIT
 
 systemctl daemon-reload
 systemctl enable --now qits-ci-runner
-# enable --now starts a stopped unit and leaves a running one alone; a rotation has just rewritten
-# the env file under a running one, so it is restarted to read it.
-systemctl restart qits-ci-runner
-echo "qits-ci-runner is running. Follow it with: journalctl -u qits-ci-runner -f"
+# enable --now leaves a running unit alone, and a re-run has just rewritten the env file under one.
+if [ "$rerun" = yes ]; then
+  systemctl restart qits-ci-runner
+fi
+
+echo "qits-ci-runner installed; watch: journalctl -fu qits-ci-runner"
