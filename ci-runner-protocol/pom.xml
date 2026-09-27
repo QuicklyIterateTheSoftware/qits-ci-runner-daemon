@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>eu.wohlben</groupId>
+        <artifactId>qits</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <!-- PUBLISHED COORDINATES, and they deliberately do not inherit the parent's — the same move
+         ci-daemon-protocol makes, for the same reason: `eu.wohlben.qits:qits-*` is what every
+         artifact this platform releases is called, and `ci-runner-protocol` in a registry shared by
+         every repository here says nothing about whose ci. -->
+    <groupId>eu.wohlben.qits</groupId>
+    <artifactId>qits-ci-runner-protocol</artifactId>
+
+    <!-- The runner control-socket wire contract: plain records + the shared type/field name
+         constants, framework-free and dependency-free. Both qits-ci (the host, serializing with
+         Jackson) and the native runner (`ci-runner`, mapping via Vert.x JsonObject) depend on it so
+         neither owns the protocol. No JSON library here on purpose — serialization lives on each
+         side against whatever it already carries.
+
+         Deliberately NOT the ci-daemon protocol. The two sockets have different peers, different
+         credentials and different lifetimes: a step container's daemon says one step's worth of
+         things and exits, a runner holds its socket for as long as the host it runs on is up. A
+         shared contract would make every step-protocol bump a runner release and the reverse.
+
+         IT CARRIES THE RELEASE'S OWN VERSION TOO (CiRunnerBinary), for the reason
+         qits-ci-daemon-protocol does: the thing a consumer must pin and the thing it must speak
+         are the same release. -->
+
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <!-- FILTERING IS ON FOR THIS MODULE'S ONE RESOURCE AND NOTHING ELSE — see
+             qits-ci-daemon's ci-daemon-protocol/pom.xml for why the include/exclude pair is not
+             belt-and-braces. CiRunnerBinary refuses an unfiltered value, so switching this block
+             off fails loudly. -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>eu/wohlben/qits/cirunner/protocol/ci-runner-binary.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>eu/wohlben/qits/cirunner/protocol/ci-runner-binary.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
