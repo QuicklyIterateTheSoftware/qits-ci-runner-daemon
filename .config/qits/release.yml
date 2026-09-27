@@ -44,9 +44,9 @@ release-request:
       # THE TOOLCHAIN TAG IS A HASH OF ITS INPUTS, NOT qits-ci-daemon's BARE `jdk-25`. Two
       # repositories now carry a copy of docker/Dockerfile.musl-builder, and a shared mutable tag is
       # exactly what one's push could overwrite between the other's push and its pull. The hash is
-      # the archetype's derivation (release-archetypes/daemon.yml's header argues it): identical
-      # inputs land on the identical tag, so the two copies share one image while they agree and
-      # stop sharing the moment one of them changes.
+      # the archetype's derivation (release-archetypes/daemon.yml's header argues it): this tree's
+      # toolchain gets a tag of its own that nothing else pushes, and the QA and release phases of
+      # one tree still land on the same tag, so the native compile stays a cache hit.
       builder_tag=$( { cat docker/Dockerfile.musl-builder; printf '%s\n%s\n' "$musl_url" "$zlib_url"; } | sha256sum | cut -c1-16 )
       builder="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/graalvmce-musl-builder:jdk-25-$builder_tag"
       buildctl build --frontend dockerfile.v0 \
