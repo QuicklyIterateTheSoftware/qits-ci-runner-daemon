@@ -166,4 +166,22 @@ class LauncherTest {
             .anyMatch(c -> c.equals(
                 List.of("network", "connect", "qits-net", BuildPlane.CONTAINER))));
   }
+
+  @Test
+  void aBuildkitHostTheSpecAlreadyCarriesIsKept() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir).answer("inspect", 1, "", "").answer("run", 0, "cid\n", "");
+    assertInstanceOf(
+        Launched.class,
+        launcher(fake)
+            .launch(
+                new Launch(
+                    "run-1", 0, building(null, Map.of("BUILDKIT_HOST", "tcp://elsewhere:1234"), false))));
+    List<String> step =
+        fake.calls().stream()
+            .filter(c -> c.get(0).equals("run") && c.contains("qits-ci-run-1-x-0"))
+            .findFirst()
+            .orElseThrow();
+    assertEquals("tcp://elsewhere:1234", envValue(step, "BUILDKIT_HOST"));
+  }
 }

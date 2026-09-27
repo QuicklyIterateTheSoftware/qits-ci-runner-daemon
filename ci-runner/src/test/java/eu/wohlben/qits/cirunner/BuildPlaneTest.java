@@ -106,4 +106,92 @@ class BuildPlaneTest {
         bare(fake.calls("network")).contains(
             List.of("network", "connect", "qits-net", "qits-ci-runner-buildkitd")));
   }
+
+  /** What a runner on the platform host's qits-net sets — qits-containers' values, abridged. */
+  private static final List<String> HTTP = List.of("dev-qits-artifacts:8080", "dev-qits-platform-mirror:8080");
+
+  private static final List<String> MIRRORS =
+      List.of(
+          "registry.dev.localhost:8080=dev-qits-artifacts:8080",
+          "docker.io=dev-qits-platform-mirror:8080/hub",
+          "dev-qits-artifacts:8080=dev-qits-artifacts:8080");
+
+  @Test
+  void anUnconfiguredBuilderRendersOnlyTheNamespaceAndDnsSettings() {
+    assertEquals(
+        """
+        [worker.oci]
+          networkMode = "host"
+          gc = true
+        [dns]
+          nameservers = ["127.0.0.11"]
+        """,
+        BuildPlane.renderToml(List.of(), List.of()));
+  }
+
+  @Test
+  void mirrorsAndPlainHttpRegistriesRenderOneTablePerHost() {
+    assertEquals(
+        """
+        [worker.oci]
+          networkMode = "host"
+          gc = true
+        [dns]
+          nameservers = ["127.0.0.11"]
+        [registry."registry.dev.localhost:8080"]
+          mirrors = ["dev-qits-artifacts:8080"]
+        [registry."docker.io"]
+          mirrors = ["dev-qits-platform-mirror:8080/hub"]
+        [registry."dev-qits-artifacts:8080"]
+          mirrors = ["dev-qits-artifacts:8080"]
+          http = true
+        [registry."dev-qits-platform-mirror:8080"]
+          http = true
+        """,
+        BuildPlane.renderToml(HTTP, MIRRORS));
+  }
+
+  @Test
+  void theRenderedTomlIsWhatTheBuilderIsStartedWith() throws Exception {
+    FakeDocker fake = new FakeDocker(dir).answer("inspect", 1, "", "No such object");
+    BuildPlane plane = new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0", HTTP, MIRRORS);
+
+    assertEquals(Optional.empty(), plane.ensure(null));
+    List<String> run = fake.calls("run").getFirst();
+    assertEquals(
+        "BUILDKITD_TOML=" + BuildPlane.renderToml(HTTP, MIRRORS), run.get(run.indexOf("-e") + 1));
+    assertTrue(run.contains("qits.ci.runner.buildkitd=" + plane.stamp()));
+  }
+
+  @Test
+  void aChangedRegistrySettingChangesTheStampAndRecreatesTheBuilder() throws Exception {
+    FakeDocker fake = new FakeDocker(dir);
+    BuildPlane before = new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0");
+    BuildPlane after =
+        new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0", HTTP, List.of());
+    assertTrue(!before.stamp().equals(after.stamp()), "the toml is stamp material");
+    // The running builder was started under the old configuration.
+    fake.answer("inspect", 0, before.stamp() + "|running\n", "");
+
+    assertEquals(Optional.empty(), after.ensure(null));
+    assertEquals(List.of(List.of("rm", "-f", "qits-ci-runner-buildkitd")), fake.calls("rm"));
+    List<String> run = fake.calls("run").getFirst();
+    assertTrue(run.contains("qits.ci.runner.buildkitd=" + after.stamp()));
+    assertTrue(run.get(run.indexOf("-e") + 1).contains("[registry.\"dev-qits-artifacts:8080\"]\n  http = true"));
+  }
+
+  @Test
+  void anUnchangedConfigurationIsAdoptedRatherThanRecreated() throws Exception {
+    FakeDocker fake = new FakeDocker(dir);
+    BuildPlane plane =
+        new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0", HTTP, MIRRORS);
+    BuildPlane sameAgain =
+        new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0", HTTP, MIRRORS);
+    assertEquals(plane.stamp(), sameAgain.stamp(), "the rendering is deterministic");
+    fake.answer("inspect", 0, plane.stamp() + "|running\n", "");
+
+    assertEquals(Optional.empty(), sameAgain.ensure(null));
+    assertEquals(0, fake.calls("rm").size());
+    assertEquals(0, fake.calls("run").size());
+  }
 }

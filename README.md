@@ -78,6 +78,19 @@ with a reason.
 | `QITS_CI_RUNNER_DOCKER_BINARY` | The docker CLI to run. | `docker` |
 | `QITS_CI_RUNNER_DOCKER_TIMEOUT` | Seconds any one docker call may take before it is killed. | `120` |
 | `QITS_CI_RUNNER_BUILDKIT_IMAGE` | The image of the runner's own buildkitd. | `moby/buildkit:v0.33.0` |
+| `QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES` | Comma list of `host[:port]` the builder speaks plain HTTP to. | empty |
+| `QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS` | Comma list of `from=to` registry rewrites; `to` may carry a path (`mirror:8080/hub`). | empty |
+
+Both builder lists stay empty on a machine that reaches the platform through its public domain —
+every registry there is HTTPS. A runner on the platform host's own network (`qits-net`) needs the
+values qits-containers gives the platform's builder (`qits.containers.buildkit.http-registries` and
+`qits.containers.buildkit.registry-mirrors`), or its builds cannot pull the committed `FROM` lines or
+push to the platform's plain-HTTP registry. For example:
+
+    QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES=dev-qits-artifacts:8080,dev-qits-platform-mirror:8080
+    QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS=registry.dev.localhost:8080=dev-qits-artifacts:8080,mirror.dev.localhost:8080=dev-qits-platform-mirror:8080,docker.io=dev-qits-platform-mirror:8080/hub
+
+Changing either replaces the builder on its next use (its cache volume survives).
 
 ### Exit codes
 
@@ -132,7 +145,16 @@ or binds the docker socket gets the runner's own `qits-ci-runner-buildkitd` (pri
 `qits-buildkitd-state`, on the runner-owned bridge network `qits-ci-runner`), started on first need.
 The step joins that network and receives `BUILDKIT_HOST=tcp://qits-ci-runner-buildkitd:1234` unless
 its spec already carries the key — an empty value is qits-ci's "switched off" and is never overwritten.
-A step that names its own network as well is attached to both, which needs Docker Engine 25 or newer.
+A step that names its own network as well is attached to both, which needs Docker Engine 25 or newer,
+and the builder joins that network too, so its pulls and pushes resolve that network's names.
+
+The builder's `buildkitd.toml` is rendered the way qits-containers' `PlatformBuildkit` renders the
+platform builder's: `networkMode = "host"` and docker's embedded DNS (`127.0.0.11`) for its `RUN`s,
+then one `[registry."host"]` table per host from `QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS` and
+`QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES`. It reaches the container as an environment value the
+container writes to `/etc/buildkit/buildkitd.toml` itself. The container carries a stamp label, a
+hash of the image, the toml and the start script, and a builder whose stamp differs from the
+configured one is removed and started again with the new configuration.
 
 ## The install-script contract
 

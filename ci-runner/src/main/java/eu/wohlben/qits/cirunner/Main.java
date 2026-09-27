@@ -60,6 +60,12 @@ public class Main {
     @ConfigProperty(name = "qits.ci.runner.buildkit-image")
     Optional<String> buildkitImage;
 
+    @ConfigProperty(name = "qits.ci.runner.buildkit-http-registries")
+    Optional<String> buildkitHttpRegistries;
+
+    @ConfigProperty(name = "qits.ci.runner.buildkit-registry-mirrors")
+    Optional<String> buildkitRegistryMirrors;
+
     @ConfigProperty(name = "qits.ci.runner.heartbeat-interval-ms", defaultValue = "10000")
     long heartbeatMillis;
 
@@ -85,7 +91,9 @@ public class Main {
                 slots.orElse(null),
                 dockerBinary.orElse(null),
                 dockerTimeout.orElse(null),
-                buildkitImage.orElse(null));
+                buildkitImage.orElse(null),
+                buildkitHttpRegistries.orElse(null),
+                buildkitRegistryMirrors.orElse(null));
       } catch (RunnerEnv.Invalid invalid) {
         // The journal is the only channel before anything is dialled, so this line is the whole
         // diagnosis an operator gets. It names the variable, never a value that could be a secret.
@@ -94,7 +102,13 @@ public class Main {
       }
       Docker docker = Docker.forking(env.dockerTimeoutSeconds());
       Http http = new Http(vertx, httpTimeoutMillis);
-      BuildPlane buildPlane = new BuildPlane(docker, env.dockerBinary(), env.buildkitImage());
+      BuildPlane buildPlane =
+          new BuildPlane(
+              docker,
+              env.dockerBinary(),
+              env.buildkitImage(),
+              env.buildkitHttpRegistries(),
+              env.buildkitRegistryMirrors());
       RunnerMain runner =
           new RunnerMain(
               vertx,

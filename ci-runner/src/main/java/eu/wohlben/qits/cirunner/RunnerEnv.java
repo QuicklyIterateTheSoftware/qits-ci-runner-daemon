@@ -1,6 +1,9 @@
 package eu.wohlben.qits.cirunner;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * Everything the runner is handed before anything is dialled, already parsed. Built by {@link
@@ -18,7 +21,19 @@ public record RunnerEnv(
     int slots,
     String dockerBinary,
     long dockerTimeoutSeconds,
-    String buildkitImage) {
+    String buildkitImage,
+    List<String> buildkitHttpRegistries,
+    List<String> buildkitRegistryMirrors) {
+
+  /**
+   * A registry as buildkitd.toml names it: {@code host[:port]}. Checked here because the value is
+   * rendered inside a TOML string — a quote or a newline in it would be configuration nobody wrote.
+   */
+  private static final Pattern REGISTRY = Pattern.compile("[A-Za-z0-9][A-Za-z0-9.-]{0,252}(:[0-9]{1,5})?");
+
+  /** A mirror target may carry a path prefix ({@code mirror:8080/hub}), the way PlatformBuildkit's do. */
+  private static final Pattern MIRROR_TARGET =
+      Pattern.compile("[A-Za-z0-9][A-Za-z0-9.-]{0,252}(:[0-9]{1,5})?(/[A-Za-z0-9._-]+)*");
 
   /** {@code QITS_CI_RUNNER_STATE_DIR}'s default — what the unit's {@code StateDirectory=} makes. */
   public static final String DEFAULT_STATE_DIR = "/var/lib/qits-ci-runner";
@@ -55,6 +70,31 @@ public record RunnerEnv(
       String dockerTimeout,
       String buildkitImage)
       throws Invalid {
+    return parse(
+        url, runnerId, registrationToken, stateDir, slots, dockerBinary, dockerTimeout,
+        buildkitImage, null, null);
+  }
+
+  /**
+   * The same, with the builder's registry configuration: {@code QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES}
+   * (comma list of {@code host[:port]}) and {@code QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS} (comma list
+   * of {@code from=to}). Both default to empty, which is right for a runner on the edge plane — every
+   * registry there is https and resolves publicly. A runner on the platform host's {@code qits-net}
+   * sets them to qits-containers' {@code qits.containers.buildkit.http-registries} / {@code
+   * registry-mirrors} values, or its builder cannot push to the platform's plain-HTTP registry.
+   */
+  public static RunnerEnv parse(
+      String url,
+      String runnerId,
+      String registrationToken,
+      String stateDir,
+      String slots,
+      String dockerBinary,
+      String dockerTimeout,
+      String buildkitImage,
+      String buildkitHttpRegistries,
+      String buildkitRegistryMirrors)
+      throws Invalid {
     if (blank(url)) {
       throw new Invalid("QITS_CI_RUNNER_URL is not set");
     }
@@ -77,7 +117,51 @@ public record RunnerEnv(
         positive("QITS_CI_RUNNER_SLOTS", slots, DEFAULT_SLOTS),
         blank(dockerBinary) ? "docker" : dockerBinary.trim(),
         positive("QITS_CI_RUNNER_DOCKER_TIMEOUT", stripSeconds(dockerTimeout), 120),
-        blank(buildkitImage) ? DEFAULT_BUILDKIT_IMAGE : buildkitImage.trim());
+        blank(buildkitImage) ? DEFAULT_BUILDKIT_IMAGE : buildkitImage.trim(),
+        httpRegistries(buildkitHttpRegistries),
+        mirrors(buildkitRegistryMirrors));
+  }
+
+  private static List<String> httpRegistries(String value) throws Invalid {
+    List<String> registries = new ArrayList<>();
+    for (String item : items(value)) {
+      if (!REGISTRY.matcher(item).matches()) {
+        throw new Invalid(
+            "QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES has an entry that is not host[:port]: '"
+                + item + "'");
+      }
+      registries.add(item);
+    }
+    return List.copyOf(registries);
+  }
+
+  private static List<String> mirrors(String value) throws Invalid {
+    List<String> mirrors = new ArrayList<>();
+    for (String item : items(value)) {
+      int split = item.indexOf('=');
+      if (split <= 0
+          || !REGISTRY.matcher(item.substring(0, split)).matches()
+          || !MIRROR_TARGET.matcher(item.substring(split + 1)).matches()) {
+        throw new Invalid(
+            "QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS has an entry that is not from=to: '"
+                + item + "'");
+      }
+      mirrors.add(item);
+    }
+    return List.copyOf(mirrors);
+  }
+
+  private static List<String> items(String value) {
+    List<String> items = new ArrayList<>();
+    if (blank(value)) {
+      return items;
+    }
+    for (String item : value.split(",")) {
+      if (!item.isBlank()) {
+        items.add(item.trim());
+      }
+    }
+    return items;
   }
 
   /** {@code 120} and {@code 120s} both mean seconds; nothing else is accepted. */

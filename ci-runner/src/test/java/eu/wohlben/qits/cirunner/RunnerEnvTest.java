@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -76,5 +77,51 @@ class RunnerEnvTest {
         45,
         RunnerEnv.parse("http://dev-qits-ci:8080", "r1", null, null, "3", null, "45s", null)
             .dockerTimeoutSeconds());
+  }
+
+  @Test
+  void theBuilderRegistryListsDefaultEmptyAndParseCommaSeparated() throws Exception {
+    RunnerEnv none =
+        RunnerEnv.parse("https://ci.example", "r1", null, null, null, null, null, null);
+    assertEquals(List.of(), none.buildkitHttpRegistries());
+    assertEquals(List.of(), none.buildkitRegistryMirrors());
+
+    RunnerEnv set =
+        RunnerEnv.parse(
+            "http://dev-qits-ci:8080", "r1", null, null, null, null, null, null,
+            " dev-qits-artifacts:8080 , dev-qits-platform-mirror:8080,",
+            "registry.dev.localhost:8080=dev-qits-artifacts:8080,docker.io=dev-qits-platform-mirror:8080/hub");
+    assertEquals(
+        List.of("dev-qits-artifacts:8080", "dev-qits-platform-mirror:8080"),
+        set.buildkitHttpRegistries());
+    assertEquals(
+        List.of(
+            "registry.dev.localhost:8080=dev-qits-artifacts:8080",
+            "docker.io=dev-qits-platform-mirror:8080/hub"),
+        set.buildkitRegistryMirrors());
+  }
+
+  @Test
+  void aRegistryEntryThatWouldBreakOutOfItsTomlStringIsRefused() {
+    // The values are rendered inside quoted TOML keys and strings; a quote or a newline there would
+    // be configuration nobody wrote.
+    assertTrue(
+        assertThrows(
+                RunnerEnv.Invalid.class,
+                () ->
+                    RunnerEnv.parse(
+                        "https://ci.example", "r1", null, null, null, null, null, null,
+                        "evil\"]\n[worker.oci]", null))
+            .getMessage()
+            .startsWith("QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES"));
+    assertTrue(
+        assertThrows(
+                RunnerEnv.Invalid.class,
+                () ->
+                    RunnerEnv.parse(
+                        "https://ci.example", "r1", null, null, null, null, null, null, null,
+                        "docker.io"))
+            .getMessage()
+            .startsWith("QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS"));
   }
 }
