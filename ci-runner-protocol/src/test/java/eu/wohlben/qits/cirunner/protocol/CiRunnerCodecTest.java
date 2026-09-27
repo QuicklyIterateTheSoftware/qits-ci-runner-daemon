@@ -53,6 +53,7 @@ class CiRunnerCodecTest {
             new Hello(
                 "2026.927.1",
                 CiRunnerProtocol.CAPABILITY_VERSION,
+                2,
                 new Capabilities(true, "amd64", "linux", Map.of("site", "home"))),
             new Reserve(),
             new Launched("run-1", 2, "0123abcd"),
@@ -158,7 +159,7 @@ class CiRunnerCodecTest {
     hello.put("capabilityVersion", 1);
     hello.put("capabilities", asEntries);
     assertEquals(
-        new Hello("v", 1, new Capabilities(true, "amd64", "linux", Map.of())),
+        new Hello("v", 1, 0, new Capabilities(true, "amd64", "linux", Map.of())),
         CiRunnerCodec.decode(hello));
     // And an entry that is not an entry is malformed, not silently dropped.
     Map<String, Object> bad = new LinkedHashMap<>(hello);

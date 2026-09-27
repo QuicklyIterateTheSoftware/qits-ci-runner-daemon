@@ -40,6 +40,7 @@ public final class CiRunnerCodec {
         map.put(Field.TYPE, Type.HELLO);
         map.put(Field.RUNNER_VERSION, m.runnerVersion());
         map.put(Field.CAPABILITY_VERSION, m.capabilityVersion());
+        map.put(Field.SLOTS, m.slots());
         map.put(Field.CAPABILITIES, m.capabilities() == null ? null : capabilities(m.capabilities()));
       }
       case Reserve _ -> map.put(Field.TYPE, Type.RESERVE);
@@ -120,6 +121,7 @@ public final class CiRunnerCodec {
             new Hello(
                 str(map, Field.RUNNER_VERSION),
                 intVal(map, Field.CAPABILITY_VERSION),
+                intVal(map, Field.SLOTS),
                 capabilities(object(map, Field.CAPABILITIES)));
         case Type.RESERVE -> new Reserve();
         case Type.LAUNCHED ->
