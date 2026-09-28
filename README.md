@@ -139,6 +139,27 @@ first:
 can go too; the old runner's `qits-ci-runner-buildkitd` builder is adopted by the new one as it is.) From then on the runner is a
 container and updates itself.
 
+### Quarantine and health checks
+
+The CI stops giving a runner work — its slots forced to 0, the same as while it drains for an
+update — after it has caused enough failures in a row: an image pull or container start the runner
+itself could not do, a step daemon that never dials back, or a control-socket connection lost too
+often to be believed a fluke. It also happens when a periodic **health check**, a pseudo-build the CI
+runs on the runner like any other — it clones a repository and runs `echo hello world` in the
+standard CI image — comes back failed. A **new runner starts quarantined**, and stays that way until
+its first health check passes; while quarantined, the check repeats hourly. `docker logs` shows why:
+
+    ci-runner is quarantined since <since>: <reason>; it takes no new runs until reinstated
+    ci-runner reinstated by <by>
+
+The runner does nothing differently while quarantined — it still answers `Hello` and still sends
+`Reserve` when the CI says there is a backlog, the same as any other session; the CI is the one that
+answers every `Reserve` with `Nothing` until the quarantine lifts, exactly as it does for a draining
+runner. The log line, and the runner's own idea of its status, are for the person at the machine.
+
+An admin lifts a quarantine from the Runners page in the CI UI — greenlighting it directly, or
+triggering an immediate health check rather than waiting for the hourly one.
+
 ### Rotating the registration, or replacing a runner
 
 In the CI UI, **Replace registration token** on the runner, then paste the **new line** into a shell
@@ -252,12 +273,19 @@ container this is, what it was started with, and its successor). Every docker ca
     Released{run}                            the run is closed; its slot is free
     Upgrade{version, image, sha256?}         become this version: drain, pull, start a successor
     Retire{reason}                           a runner of the pinned version took over; exit 0
+    Quarantined{reason, since}               the CI stops giving this runner work (see "Quarantine and health checks")
+    Reinstated{by}                           the quarantine is lifted
     Heartbeat                                every 10 s
 
 **`Upgrade` and `Retire` are frozen**, with `Hello.runnerVersion`: they are how a runner of any older
 version is told to update, so their wire shape never changes (see `Upgrade`'s javadoc). A runner too
 old to know them drops them as frames of an unknown type and stays connected — the host keeps it
 draining, and a person re-pastes the install line (see "Updating").
+
+**`Quarantined` and `Reinstated` are additive, not frozen.** A runner too old to know them drops
+them the same way — it still gets no work while quarantined, because the CI is the one answering
+every `Reserve` with `Nothing`, but its log says nothing about why. `CAPABILITY_VERSION` does not
+move for them.
 
 **A runner's own container is labelled `qits.ci.runner.process=<id>`**, and its version
 `qits.ci.runner.version=<version>` — never `qits.ci.runner=<id>`, the step label the sweep below

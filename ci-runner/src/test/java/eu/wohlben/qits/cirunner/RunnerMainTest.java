@@ -16,8 +16,10 @@ import eu.wohlben.qits.cirunner.protocol.Launch;
 import eu.wohlben.qits.cirunner.protocol.LaunchFailed;
 import eu.wohlben.qits.cirunner.protocol.Launched;
 import eu.wohlben.qits.cirunner.protocol.Nothing;
+import eu.wohlben.qits.cirunner.protocol.Quarantined;
 import eu.wohlben.qits.cirunner.protocol.Reap;
 import eu.wohlben.qits.cirunner.protocol.Reaped;
+import eu.wohlben.qits.cirunner.protocol.Reinstated;
 import eu.wohlben.qits.cirunner.protocol.Released;
 import eu.wohlben.qits.cirunner.protocol.Reserve;
 import eu.wohlben.qits.cirunner.protocol.Retire;
@@ -441,6 +443,15 @@ class RunnerMainTest {
     assertTrue(condition.test(docker.calls()), () -> "docker calls: " + calls());
   }
 
+  /** Poll a runner-side condition set from the WebSocket's own thread, not the test's. */
+  private void awaitTrue(java.util.function.BooleanSupplier condition) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+    while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+      Thread.sleep(20);
+    }
+    assertTrue(condition.getAsBoolean());
+  }
+
   private String calls() {
     try {
       return docker.calls().toString();
@@ -606,6 +617,41 @@ class RunnerMainTest {
     assertEquals(ExitCode.OK, exit.get(10, TimeUnit.SECONDS));
     runner = null;
     assertTrue(has(docker.calls(), List.of("update", "--restart=no", SELF)), this::calls);
+  }
+
+  @Test
+  void aQuarantinedFrameSetsTheRunnersOwnFlagAndAReinstatedClearsIt() throws Exception {
+    ackWith(1, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+    assertFalse(runner.quarantined());
+
+    host.send(new Quarantined("3 runner-caused failures in a row", "2026-09-28T12:00:00Z"));
+    awaitTrue(runner::quarantined);
+
+    host.send(new Reinstated("admin"));
+    awaitTrue(() -> !runner.quarantined());
+  }
+
+  @Test
+  void aQuarantinedRunnerKeepsReservingTheHostAlreadyAnswersNothing() throws Exception {
+    // The runner does not change its own Reserve behaviour on Quarantined — the host is the one
+    // that stops answering Take while a runner is quarantined, the same as while it drains.
+    host.script =
+        (h, message) -> {
+          if (message instanceof Hello) {
+            h.send(new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 1));
+            h.send(new Backlog(1));
+            h.send(new Quarantined("failed health check", "2026-09-28T12:00:00Z"));
+          } else if (message instanceof Reserve) {
+            h.send(new Nothing());
+          }
+        };
+    start("t", 10_000);
+    host.await(Hello.class);
+    awaitTrue(runner::quarantined);
+    host.await(Reserve.class);
+    assertEquals(0, runner.reservations().held());
   }
 
   @Test

@@ -10,7 +10,9 @@ import eu.wohlben.qits.cirunner.protocol.CiRunnerProtocol;
 import eu.wohlben.qits.cirunner.protocol.Hello;
 import eu.wohlben.qits.cirunner.protocol.Launch;
 import eu.wohlben.qits.cirunner.protocol.Nothing;
+import eu.wohlben.qits.cirunner.protocol.Quarantined;
 import eu.wohlben.qits.cirunner.protocol.Reap;
+import eu.wohlben.qits.cirunner.protocol.Reinstated;
 import eu.wohlben.qits.cirunner.protocol.Released;
 import eu.wohlben.qits.cirunner.protocol.Reserve;
 import eu.wohlben.qits.cirunner.protocol.Retire;
@@ -97,6 +99,14 @@ public final class RunnerMain implements ControlSocket.Listener {
   private final CompletableFuture<Integer> exit = new CompletableFuture<>();
   private volatile ControlSocket socket;
   private volatile Rollover rollover;
+
+  /**
+   * For this runner's own status only. The host already answers every {@link Reserve} with {@link
+   * Nothing} while a runner is quarantined, so nothing here needs to branch on it — {@link
+   * Quarantined} and {@link Reinstated} exist to tell the person at the machine, via the log, why the
+   * runner sits idle (or no longer does).
+   */
+  private volatile boolean quarantined;
 
   public RunnerMain(Vertx vertx, RunnerEnv env, Parts parts) {
     this.vertx = vertx;
@@ -198,6 +208,16 @@ public final class RunnerMain implements ControlSocket.Listener {
           workers.execute(this::leave);
         }
       }
+      case Quarantined quarantine -> {
+        quarantined = true;
+        LOG.warnf(
+            "ci-runner is quarantined since %s: %s; it takes no new runs until reinstated",
+            quarantine.since(), quarantine.reason());
+      }
+      case Reinstated reinstated -> {
+        quarantined = false;
+        LOG.infof("ci-runner reinstated by %s", reinstated.by());
+      }
       default ->
           // Everything else in the sealed set is runner→host; a host echoing one is not a
           // conversation this version has.
@@ -269,5 +289,10 @@ public final class RunnerMain implements ControlSocket.Listener {
   /** For the suite: the slot state. */
   Reservations reservations() {
     return reservations;
+  }
+
+  /** For the suite: whether the host's last word on quarantine was {@link Quarantined}. */
+  boolean quarantined() {
+    return quarantined;
   }
 }
