@@ -17,6 +17,9 @@ import org.jboss.logging.Logger;
  * containers, no held runs", whether the process just started or the network blinked. A step whose
  * daemon was still talking to qits-ci across the blink is sacrificed, and that is the trade: a run is
  * recorded, retryable and never wedged, where a half-adopted one would be none of those.
+ *
+ * <p>Each container's output is written to the runner's log before it goes ({@link LogTail}): the
+ * run it belonged to was failed without it, and the removal destroys the only copy.
  */
 public final class BootSweep {
 
@@ -25,11 +28,13 @@ public final class BootSweep {
   private final Docker docker;
   private final String dockerBinary;
   private final String runnerId;
+  private final LogTail logTail;
 
   public BootSweep(Docker docker, String dockerBinary, String runnerId) {
     this.docker = docker;
     this.dockerBinary = dockerBinary;
     this.runnerId = runnerId;
+    this.logTail = new LogTail(docker, dockerBinary);
   }
 
   /** One pass. Returns how many containers it removed; failures are logged, never thrown. */
@@ -47,6 +52,7 @@ public final class BootSweep {
       }
       Docker.Result gone;
       try {
+        Reaper.logLastWords(logTail, id.trim(), "a leftover of an earlier session");
         gone = docker.run(RunnerArgv.rm(dockerBinary, id.trim()));
       } catch (IllegalArgumentException notAnId) {
         LOG.warnf("ci-runner ignored a line docker ps answered: %s", notAnId.getMessage());

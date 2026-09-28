@@ -45,6 +45,20 @@ public interface Docker {
   Result run(List<String> argv);
 
   /**
+   * {@link #run} with stderr folded into stdout as the process wrote them, keeping at most {@code
+   * maxCapture} bytes of the tail. For {@code docker logs}, which replays a container's two streams
+   * onto its own two: read apart they lose the order a person needs to follow a failure, and the
+   * interleaving is only recoverable at the pipe. The default is for a caller that is not a
+   * process, and can only concatenate.
+   */
+  default Result runMerged(List<String> argv, int maxCapture) {
+    Result result = run(argv);
+    String merged = (result.stdout() == null ? "" : result.stdout())
+        + (result.stderr() == null ? "" : result.stderr());
+    return new Result(result.exitCode(), merged, "", result.timedOut());
+  }
+
+  /**
    * The production runner. A spawn failure (no docker binary) is exit {@code -1} with the reason as
    * stderr, so a caller only ever branches on {@link Result#ok()}.
    */
@@ -56,68 +70,86 @@ public interface Docker {
               thread.setDaemon(true);
               return thread;
             });
-    return argv -> {
-      Process process;
-      try {
-        process = new ProcessBuilder(argv).start();
-      } catch (IOException e) {
-        return new Result(-1, "", "could not run " + argv.getFirst() + ": " + e.getMessage(), false);
+    return new Docker() {
+      @Override
+      public Result run(List<String> argv) {
+        return fork(argv, timeoutSeconds, pumps, false, MAX_CAPTURE);
       }
-      try {
-        // No stdin: nothing here is interactive, and a docker that waits on a terminal must see EOF.
-        process.getOutputStream().close();
-      } catch (IOException ignored) {
-        // already closed is as good as closed
-      }
-      CompletableFuture<String> out =
-          CompletableFuture.supplyAsync(() -> tail(process.getInputStream()), pumps);
-      CompletableFuture<String> err =
-          CompletableFuture.supplyAsync(() -> tail(process.getErrorStream()), pumps);
-      try {
-        if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
-          process.destroyForcibly();
-          process.waitFor(5, TimeUnit.SECONDS);
-          return new Result(
-              -1,
-              out.getNow(""),
-              "docker " + String.join(" ", argv.subList(1, Math.min(argv.size(), 3)))
-                  + " did not answer within " + timeoutSeconds + "s",
-              true);
-        }
-        return new Result(
-            process.exitValue(), out.get(5, TimeUnit.SECONDS), err.get(5, TimeUnit.SECONDS), false);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        process.destroyForcibly();
-        return new Result(-1, "", "interrupted", false);
-      } catch (Exception e) {
-        return new Result(-1, "", String.valueOf(e.getMessage()), false);
+
+      @Override
+      public Result runMerged(List<String> argv, int maxCapture) {
+        return fork(argv, timeoutSeconds, pumps, true, maxCapture);
       }
     };
   }
 
-  /** Read a stream to its end, keeping at most {@link #MAX_CAPTURE} bytes of its tail. */
-  private static String tail(InputStream in) {
-    byte[] ring = new byte[MAX_CAPTURE];
+  private static Result fork(
+      List<String> argv,
+      long timeoutSeconds,
+      ExecutorService pumps,
+      boolean merge,
+      int maxCapture) {
+    Process process;
+    try {
+      process = new ProcessBuilder(argv).redirectErrorStream(merge).start();
+    } catch (IOException e) {
+      return new Result(-1, "", "could not run " + argv.getFirst() + ": " + e.getMessage(), false);
+    }
+    try {
+      // No stdin: nothing here is interactive, and a docker that waits on a terminal must see EOF.
+      process.getOutputStream().close();
+    } catch (IOException ignored) {
+      // already closed is as good as closed
+    }
+    CompletableFuture<String> out =
+        CompletableFuture.supplyAsync(() -> tail(process.getInputStream(), maxCapture), pumps);
+    // Merged, the error stream is a null stream that ends at once.
+    CompletableFuture<String> err =
+        CompletableFuture.supplyAsync(() -> tail(process.getErrorStream(), MAX_CAPTURE), pumps);
+    try {
+      if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+        process.destroyForcibly();
+        process.waitFor(5, TimeUnit.SECONDS);
+        return new Result(
+            -1,
+            out.getNow(""),
+            "docker " + String.join(" ", argv.subList(1, Math.min(argv.size(), 3)))
+                + " did not answer within " + timeoutSeconds + "s",
+            true);
+      }
+      return new Result(
+          process.exitValue(), out.get(5, TimeUnit.SECONDS), err.get(5, TimeUnit.SECONDS), false);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      process.destroyForcibly();
+      return new Result(-1, "", "interrupted", false);
+    } catch (Exception e) {
+      return new Result(-1, "", String.valueOf(e.getMessage()), false);
+    }
+  }
+
+  /** Read a stream to its end, keeping at most {@code max} bytes of its tail. */
+  private static String tail(InputStream in, int max) {
+    byte[] ring = new byte[max];
     long total = 0;
     byte[] buffer = new byte[4096];
     try (in) {
       int read;
       while ((read = in.read(buffer)) != -1) {
         for (int i = 0; i < read; i++) {
-          ring[(int) (total++ % MAX_CAPTURE)] = buffer[i];
+          ring[(int) (total++ % max)] = buffer[i];
         }
       }
     } catch (IOException ignored) {
       // a stream closed by a kill ends the capture; what was read is still the tail
     }
-    if (total <= MAX_CAPTURE) {
+    if (total <= max) {
       return new String(ring, 0, (int) total, StandardCharsets.UTF_8);
     }
-    int start = (int) (total % MAX_CAPTURE);
-    byte[] ordered = new byte[MAX_CAPTURE];
-    System.arraycopy(ring, start, ordered, 0, MAX_CAPTURE - start);
-    System.arraycopy(ring, 0, ordered, MAX_CAPTURE - start, start);
+    int start = (int) (total % max);
+    byte[] ordered = new byte[max];
+    System.arraycopy(ring, start, ordered, 0, max - start);
+    System.arraycopy(ring, 0, ordered, max - start, start);
     return new String(ordered, StandardCharsets.UTF_8);
   }
 }

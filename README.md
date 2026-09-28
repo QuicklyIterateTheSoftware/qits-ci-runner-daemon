@@ -216,9 +216,10 @@ first.
 Inside `ci-runner/`, `Main` is the only CDI bean. It resolves configuration and news up plain classes:
 `RunnerMain` (the flow), `Registration` and `Bearer` (identity), `ControlSocket` (the connection),
 `Reservations` (slot arithmetic), `Launcher`/`RunnerArgv` (spec → `docker run`), `Reaper`,
-`BootSweep` and `BuildPlane` (the runner's own buildkitd), and `Rollover` with `SelfContainer` and
-`SelfSpec` (self-update: which container this is, what it was started with, and its successor). Every
-docker call goes through `Docker`, under a deadline.
+`BootSweep` and `LogTail` (removal, and a removed container's last output), `BuildPlane` (the
+runner's own buildkitd), and `Rollover` with `SelfContainer` and `SelfSpec` (self-update: which
+container this is, what it was started with, and its successor). Every docker call goes through
+`Docker`, under a deadline.
 
 ## The conversation
 
@@ -245,6 +246,14 @@ removes, which a spec can never set either.
 **`Released` is the only thing that frees a slot.** qits-ci drives the run, and a red step skips the
 rest, so the runner cannot tell "the last step was reaped" from "the next step is not launched yet";
 the host knows and says so.
+
+**A step's last output is read before its container goes.** Every removal — a `Reap`, a `Cancel`,
+the sweep below — first runs `docker inspect` (how it ended) and `docker logs --tail 200` (both
+streams, merged), bounded to 32 KiB keeping the newest lines, with anything bearer- or
+password-shaped redacted. A reap sends it to qits-ci as `Reaped.logTail`, led by `[container exited
+<code>]` when the container had exited — the only record of a step whose daemon never dialled back.
+A cancel or a sweep has no answer to carry it in and writes it to the runner's own log. A docker
+that cannot produce the logs is a null tail, never a failed removal.
 
 **Every session starts clean.** When the connection drops, qits-ci fails the runs this runner held,
 so on every (re)connect the runner removes all containers carrying its own label

@@ -4,7 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
@@ -25,6 +27,20 @@ class DockerTest {
     assertEquals(1, result.exitCode());
     assertEquals("progress…\n", result.stdout());
     assertEquals("manifest unknown", result.detail(), "the diagnosis is stderr");
+  }
+
+  @Test
+  void mergedStreamsKeepTheOrderTheProcessWroteThemInAndTheirTail() throws Exception {
+    Path script = dir.resolve("interleaving");
+    Files.writeString(script, "#!/bin/sh\necho one\necho two >&2\necho three\n");
+    Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwxr-xr-x"));
+
+    Docker.Result merged = Docker.forking(10).runMerged(List.of(script.toString(), "logs"), 64);
+    assertTrue(merged.ok());
+    assertEquals("one\ntwo\nthree\n", merged.stdout());
+
+    Docker.Result bounded = Docker.forking(10).runMerged(List.of(script.toString(), "logs"), 6);
+    assertEquals("three\n", bounded.stdout(), "the capture keeps the tail");
   }
 
   @Test

@@ -144,12 +144,13 @@ class RunnerMainTest {
     assertEquals("Bearer runner-access-token", host.upgradeHeaders.get("Authorization"));
     assertTrue(Files.exists(state.resolve("client.json")));
     // The sweep ran before the Hello, by the runner's own label only. (What follows the Ack is the
-    // predecessor sweep, by the process label — see the rollover tests below.)
+    // predecessor sweep, by the process label — see the rollover tests below.) The leftover's
+    // output is read before it goes; ReaperTest.withoutReads leaves the calls that change things.
     assertEquals(
         List.of(
             List.of("ps", "-aq", "--filter", "label=qits.ci.runner=r1"),
             List.of("rm", "-f", "leftover1")),
-        docker.calls().subList(0, 2));
+        ReaperTest.withoutReads(docker.calls()).subList(0, 2));
   }
 
   @Test
@@ -200,8 +201,10 @@ class RunnerMainTest {
   }
 
   @Test
-  void aLaunchIsAnsweredLaunchedAndAReapReaped() throws Exception {
+  void aLaunchIsAnsweredLaunchedAndAReapReapedWithTheContainersLastWords() throws Exception {
     docker.answer("run", 0, "c0ffee\n", "");
+    docker.answer("inspect", 0, "exited 1\n", "");
+    docker.answer("logs", 0, "dial ci: no such host\n", "");
     ackWith(1, 0);
     start("t", 10_000);
     host.await(Hello.class);
@@ -209,7 +212,10 @@ class RunnerMainTest {
     host.send(new Launch("run-1", 0, WorkloadSpec.of("alpine:3", "qits-ci-run-1-x-0")));
     assertEquals(new Launched("run-1", 0, "c0ffee"), host.await(Launched.class));
     host.send(new Reap("run-1", 0, "qits-ci-run-1-x-0"));
-    assertEquals(new Reaped("run-1", 0), host.await(Reaped.class));
+    assertEquals(
+        new Reaped("run-1", 0, "[container exited 1]\ndial ci: no such host\n"),
+        host.await(Reaped.class),
+        "the tail crosses the socket's JSON on the way to the host");
 
     List<String> run = docker.calls("run").getFirst();
     assertTrue(run.contains("qits.ci.runner=r1"), run::toString);

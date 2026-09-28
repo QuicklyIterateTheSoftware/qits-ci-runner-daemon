@@ -239,6 +239,29 @@ public final class RunnerArgv {
     return List.of(dockerBinary, "rm", "-f", require(NAME, "container name", name));
   }
 
+  /**
+   * A step container's last output, both streams — read before {@link #rm}, which destroys it. The
+   * line count is docker's bound; {@link LogTail} bounds the bytes.
+   */
+  public static List<String> logs(String dockerBinary, String name) {
+    return List.of(
+        dockerBinary,
+        "logs",
+        "--tail",
+        String.valueOf(LogTail.MAX_LINES),
+        require(NAME, "container name", name));
+  }
+
+  /** Where a step container is in its life and, once it has exited, with which code. */
+  public static List<String> exitState(String dockerBinary, String name) {
+    return List.of(
+        dockerBinary,
+        "inspect",
+        "--format",
+        "{{.State.Status}} {{.State.ExitCode}}",
+        require(NAME, "container name", name));
+  }
+
   /** This runner's containers — the boot sweep's whole selection, its own label and nothing else. */
   public static List<String> psOwn(String dockerBinary, String runnerId) {
     return List.of(

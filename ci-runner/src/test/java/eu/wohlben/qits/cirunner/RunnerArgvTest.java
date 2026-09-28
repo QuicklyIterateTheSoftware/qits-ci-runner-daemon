@@ -288,4 +288,18 @@ class RunnerArgvTest {
     assertThrows(IllegalArgumentException.class, () -> RunnerArgv.containerName("r1", ""));
     assertEquals("qits-ci-runner-abcdefgh-1.2", RunnerArgv.containerName("abcdefghijk", "1.2"));
   }
+
+  @Test
+  void aStepsLastWordsAreReadByNameAndBoundedByLine() {
+    assertEquals(
+        List.of("docker", "logs", "--tail", "200", "qits-ci-run-1-x-0"),
+        RunnerArgv.logs("docker", "qits-ci-run-1-x-0"));
+    assertEquals(
+        List.of(
+            "docker", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}",
+            "qits-ci-run-1-x-0"),
+        RunnerArgv.exitState("docker", "qits-ci-run-1-x-0"));
+    assertThrows(IllegalArgumentException.class, () -> RunnerArgv.logs("docker", "--follow"));
+    assertThrows(IllegalArgumentException.class, () -> RunnerArgv.exitState("docker", "-f"));
+  }
 }

@@ -29,7 +29,23 @@ class BootSweepTest {
             List.of("ps", "-aq", "--filter", "label=qits.ci.runner=r1"),
             List.of("rm", "-f", "aaa111"),
             List.of("rm", "-f", "bbb222")),
-        fake.calls());
+        ReaperTest.withoutReads(fake.calls()));
+  }
+
+  @Test
+  void eachLeftoversOutputIsReadBeforeItIsRemoved() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("ps", 0, "aaa111\n", "")
+            .answer("inspect", 0, "exited 2\n", "")
+            .answer("logs", 0, "the step's last line\n", "");
+    new BootSweep(fake.docker(10), fake.binary, "r1").sweep();
+    assertEquals(
+        List.of(
+            List.of("inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", "aaa111"),
+            List.of("logs", "--tail", "200", "aaa111"),
+            List.of("rm", "-f", "aaa111")),
+        fake.calls().subList(1, 4));
   }
 
   @Test
