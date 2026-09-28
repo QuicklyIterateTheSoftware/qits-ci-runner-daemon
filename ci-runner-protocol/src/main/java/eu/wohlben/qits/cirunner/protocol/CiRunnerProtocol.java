@@ -20,6 +20,7 @@ package eu.wohlben.qits.cirunner.protocol;
  *   Cancel                                   (reap the whole run now)
  *   Released                                 (the run is closed; its slot is free)
  *   Upgrade → (drain) … Retire              (self-update; see Upgrade)
+ *   Quarantined … Reinstated                 (host stops giving work, then resumes; see Quarantined)
  * </pre>
  *
  * with {@link Heartbeat} underneath from connect to close.
@@ -65,6 +66,9 @@ public final class CiRunnerProtocol {
     // qits-ci -> runner, self-update. FROZEN: see Upgrade and Retire.
     public static final String UPGRADE = "upgrade";
     public static final String RETIRE = "retire";
+    // qits-ci -> runner, quarantine. Additive: see Quarantined and Reinstated.
+    public static final String QUARANTINED = "quarantined";
+    public static final String REINSTATED = "reinstated";
 
     private Type() {}
   }
@@ -93,6 +97,10 @@ public final class CiRunnerProtocol {
     public static final String VERSION = "version";
     public static final String SHA256 = "sha256";
     public static final String REASON = "reason";
+
+    // Quarantined and Reinstated.
+    public static final String SINCE = "since";
+    public static final String BY = "by";
 
     // Capabilities
     public static final String DOCKER = "docker";

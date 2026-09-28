@@ -21,4 +21,6 @@ public sealed interface CiRunnerMessage
         Cancel,
         Released,
         Upgrade,
-        Retire {}
+        Retire,
+        Quarantined,
+        Reinstated {}

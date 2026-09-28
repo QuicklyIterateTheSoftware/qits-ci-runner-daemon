@@ -79,7 +79,10 @@ class CiRunnerCodecTest {
                 "registry.qits.example.eu/qits/qits-ci-runner@sha256:"
                     + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 null),
-            new Retire("superseded by 2026.928.120000"));
+            new Retire("superseded by 2026.928.120000"),
+            new Quarantined("3 runner-caused failures in a row", "2026-09-28T12:00:00Z"),
+            new Reinstated("admin"),
+            new Reinstated("healthcheck"));
     for (CiRunnerMessage message : all) {
       assertEquals(message, roundTrip(message), () -> "did not round-trip: " + message);
     }
@@ -89,7 +92,7 @@ class CiRunnerCodecTest {
   void everyPermittedTypeIsCoveredByTheRoundTrip() {
     // A new record added to the sealed set without a case above would still compile the codec's
     // switch only if it had an arm; this pins that the test list grows with it.
-    assertEquals(16, CiRunnerMessage.class.getPermittedSubclasses().length);
+    assertEquals(18, CiRunnerMessage.class.getPermittedSubclasses().length);
   }
 
   @Test
@@ -126,6 +129,32 @@ class CiRunnerCodecTest {
         "1.0",
         CiRunnerCodec.encode(new Hello("1.0", 1, 1, null)).get("runnerVersion"),
         "Hello.runnerVersion is what the host compares with its pin");
+  }
+
+  /**
+   * The quarantine frames are additive, unlike the self-update ones: an older runner just drops
+   * them as an unknown type. Still worth pinning their wire shape by literal, the way the self-update
+   * frames are, since {@code CiRunnerProtocol}'s constants are what a rename would move with them —
+   * this catches a rename that forgot the wire is what a runner in the field already understands.
+   */
+  @Test
+  void theQuarantineFramesHaveTheDocumentedWireShape() {
+    Map<String, Object> quarantined = new LinkedHashMap<>();
+    quarantined.put("type", "quarantined");
+    quarantined.put("reason", "3 runner-caused failures in a row");
+    quarantined.put("since", "2026-09-28T12:00:00Z");
+    assertEquals(
+        quarantined,
+        CiRunnerCodec.encode(
+            new Quarantined("3 runner-caused failures in a row", "2026-09-28T12:00:00Z")));
+    assertEquals(
+        new Quarantined("3 runner-caused failures in a row", "2026-09-28T12:00:00Z"),
+        CiRunnerCodec.decode(quarantined));
+
+    assertEquals(
+        Map.of("type", "reinstated", "by", "admin"),
+        CiRunnerCodec.encode(new Reinstated("admin")));
+    assertEquals(new Reinstated("admin"), CiRunnerCodec.decode(Map.of("type", "reinstated", "by", "admin")));
   }
 
   @Test

@@ -110,6 +110,15 @@ public final class CiRunnerCodec {
         map.put(Field.TYPE, Type.RETIRE);
         map.put(Field.REASON, m.reason());
       }
+      case Quarantined m -> {
+        map.put(Field.TYPE, Type.QUARANTINED);
+        map.put(Field.REASON, m.reason());
+        map.put(Field.SINCE, m.since());
+      }
+      case Reinstated m -> {
+        map.put(Field.TYPE, Type.REINSTATED);
+        map.put(Field.BY, m.by());
+      }
     }
     return map;
   }
@@ -172,6 +181,9 @@ public final class CiRunnerCodec {
             new Upgrade(
                 str(map, Field.VERSION), str(map, Field.IMAGE), str(map, Field.SHA256));
         case Type.RETIRE -> new Retire(str(map, Field.REASON));
+        case Type.QUARANTINED ->
+            new Quarantined(str(map, Field.REASON), str(map, Field.SINCE));
+        case Type.REINSTATED -> new Reinstated(str(map, Field.BY));
         default ->
             throw new CiRunnerDecodeException(
                 Reason.UNKNOWN_TYPE, type, "unknown ci-runner message type: " + type);
