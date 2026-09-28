@@ -88,4 +88,20 @@ class ReservationsTest {
     assertFalse(r.onBacklog(5), "no Ack yet in the new session, so no slots");
     assertTrue(r.onAck(2), "the new session's Ack, with the backlog already known");
   }
+
+  @Test
+  void aDrainingRunnerNeverReservesAgainAndAReconnectDoesNotUndoIt() {
+    Reservations r = new Reservations();
+    r.onAck(2);
+    assertTrue(r.onBacklog(3));
+    r.onTake("a");
+    r.drain();
+    assertFalse(r.onBacklog(3), "no Reserve after the Upgrade");
+    assertFalse(r.onReleased("a"), "a freed slot is not refilled");
+    assertEquals(0, r.held());
+    r.reset();
+    assertFalse(r.onAck(2));
+    assertFalse(r.onBacklog(9));
+    assertTrue(r.draining());
+  }
 }

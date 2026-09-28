@@ -124,4 +124,26 @@ class RunnerEnvTest {
             .getMessage()
             .startsWith("QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS"));
   }
+
+  @Test
+  void theRolloverTimeoutDefaultsToThreeMinutesAndTakesSeconds() throws Exception {
+    assertEquals(
+        180,
+        RunnerEnv.parse("https://ci.example", "r1", null, null, null, null, null, null)
+            .rolloverTimeoutSeconds());
+    assertEquals(
+        45,
+        RunnerEnv.parse(
+                "https://ci.example", "r1", null, null, null, null, null, null, null, null, "45s")
+            .rolloverTimeoutSeconds());
+    assertTrue(
+        assertThrows(
+                RunnerEnv.Invalid.class,
+                () ->
+                    RunnerEnv.parse(
+                        "https://ci.example", "r1", null, null, null, null, null, null, null, null,
+                        "soon"))
+            .getMessage()
+            .startsWith("QITS_CI_RUNNER_ROLLOVER_TIMEOUT"));
+  }
 }

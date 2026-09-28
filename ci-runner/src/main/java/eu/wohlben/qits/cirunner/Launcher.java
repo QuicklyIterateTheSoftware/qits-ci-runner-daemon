@@ -153,7 +153,7 @@ public final class Launcher {
   }
 
   /** A fresh 0700 directory holding {@code config.json} at 0600, created with those modes. */
-  private static Path stageConfig(String document) throws IOException {
+  static Path stageConfig(String document) throws IOException {
     Path dir =
         Files.createTempDirectory(
             "qits-ci-runner-pull-",
@@ -166,7 +166,7 @@ public final class Launcher {
     return dir;
   }
 
-  private static void removeConfig(Path dir) {
+  static void removeConfig(Path dir) {
     if (dir == null) {
       return;
     }

@@ -20,6 +20,9 @@ import java.util.Set;
  *       would reserve twice and collect a guaranteed {@code Nothing}.
  *   <li>{@code Released} is the only thing that frees a slot. The runner cannot infer a run's end
  *       from its frames — see the protocol's {@code Released}.
+ *   <li>{@code Upgrade} drains: from then on nothing is reserved, for the rest of the process's life
+ *       and across reconnects — a process that is being replaced never takes work again. The runs
+ *       it holds finish; see {@link Rollover}.
  * </ul>
  *
  * <p>Synchronized, because frames arrive on the event loop and launches answer from workers.
@@ -30,6 +33,7 @@ public final class Reservations {
   private int backlog;
   private boolean outstanding;
   private boolean parked;
+  private boolean draining;
   private final Set<String> held = new LinkedHashSet<>();
 
   /** A new session: the host's cap, and nothing held — see {@link BootSweep} for why nothing. */
@@ -63,7 +67,19 @@ public final class Reservations {
     return decide();
   }
 
-  /** The socket closed: every held run is the host's to fail, and nothing is outstanding. */
+  /** Never reserve again. Held runs are kept: they finish, and their {@code Released} still counts. */
+  public synchronized void drain() {
+    draining = true;
+  }
+
+  public synchronized boolean draining() {
+    return draining;
+  }
+
+  /**
+   * The socket closed: every held run is the host's to fail, and nothing is outstanding. Draining
+   * survives it — a reconnect does not un-ask the upgrade.
+   */
   public synchronized void reset() {
     slots = 0;
     backlog = 0;
@@ -81,7 +97,7 @@ public final class Reservations {
   }
 
   private boolean decide() {
-    if (outstanding || parked || held.size() >= slots || backlog <= 0) {
+    if (draining || outstanding || parked || held.size() >= slots || backlog <= 0) {
       return false;
     }
     outstanding = true;

@@ -145,9 +145,11 @@ public final class BuildPlane {
   /**
    * The full constructor, with the CA bundle candidates as their own argument rather than a probe
    * this class runs unconditionally: a test asserting the mount's presence or absence needs to
-   * control what the "host" carries without touching the real one the suite happens to run on.
+   * control what the "host" carries without touching the real one the suite happens to run on, and
+   * {@link Main} passes none when the runner is itself in a container (see its {@code
+   * caBundleCandidates}).
    */
-  BuildPlane(
+  public BuildPlane(
       Docker docker,
       String dockerBinary,
       String image,
@@ -167,6 +169,12 @@ public final class BuildPlane {
    * single check here is the "log a WARN once" the brief asks for, with no latch to get wrong.
    */
   private static Optional<String> probeCaBundle(List<String> candidates) {
+    if (candidates.isEmpty()) {
+      LOG.info(
+          "ci-runner runs in a container and cannot see the host's CA bundle; the builder trusts"
+              + " the image's own");
+      return Optional.empty();
+    }
     for (String candidate : candidates) {
       if (Files.exists(Path.of(candidate))) {
         return Optional.of(candidate);

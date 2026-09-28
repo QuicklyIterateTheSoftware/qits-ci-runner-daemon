@@ -38,6 +38,42 @@ public final class RunnerArgv {
   /** Which run a container belongs to, so {@code Cancel{runId}} can find all of them by filter. */
   public static final String RUN_LABEL = "qits.ci.runner.run";
 
+  /**
+   * The runner's OWN container: {@code qits.ci.runner.process=<runner id>}, on the container the
+   * install script starts and on every successor. Deliberately not {@link #RUNNER_LABEL}: the boot
+   * sweep removes every container carrying that one, and a runner that matched its own sweep would
+   * remove itself on every reconnect. A step cannot forge it — it is inside the namespace {@link
+   * #run} refuses in a spec.
+   */
+  public static final String PROCESS_LABEL = "qits.ci.runner.process";
+
+  /** Which runner version a runner container runs — how a successor tells its predecessors apart. */
+  public static final String VERSION_LABEL = "qits.ci.runner.version";
+
+  /** Every runner container is {@code qits-ci-runner-<first 8 of the runner id>-<version>}. */
+  public static final String CONTAINER_PREFIX = "qits-ci-runner-";
+
+  /** The one variable a successor is never given: the token was spent by the first start. */
+  public static final String REGISTRATION_TOKEN_ENV = "QITS_CI_RUNNER_REGISTRATION_TOKEN";
+
+  /**
+   * {@code docker inspect}'s view of a runner container, narrowed by a template to exactly what a
+   * successor inherits. Narrowed rather than the whole document because {@link Docker} keeps only
+   * the tail of a stream, and a full inspect runs past that on any container with a few mounts.
+   */
+  static final String SELF_FORMAT =
+      "{\"id\":{{json .Id}},\"image\":{{json .Image}},\"env\":{{json .Config.Env}},"
+          + "\"labels\":{{json .Config.Labels}},\"binds\":{{json .HostConfig.Binds}},"
+          + "\"mounts\":{{json .HostConfig.Mounts}},\"restart\":{{json .HostConfig.RestartPolicy}},"
+          + "\"network\":{{json .HostConfig.NetworkMode}}}";
+
+  /** The image's own environment and labels, which a successor does not carry across. */
+  static final String IMAGE_CONFIG_FORMAT =
+      "{\"env\":{{json .Config.Env}},\"labels\":{{json .Config.Labels}}}";
+
+  /** One line per runner container: id, version label and state. */
+  static final String PROCESS_FORMAT = "{{.ID}}|{{.Label \"" + VERSION_LABEL + "\"}}|{{.State}}";
+
   private static final Pattern NAME = Pattern.compile("[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}");
   private static final Pattern IMAGE = Pattern.compile("[a-zA-Z0-9][a-zA-Z0-9._:/@+-]{0,511}");
   private static final Pattern ENV_KEY = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,255}");
@@ -46,6 +82,7 @@ public final class RunnerArgv {
   private static final Pattern USER = Pattern.compile("[A-Za-z0-9._-]{1,64}(:[A-Za-z0-9._-]{1,64})?");
   private static final Pattern SIZE = Pattern.compile("[0-9]{1,15}[bkmgBKMG]?");
   private static final Pattern CPUS = Pattern.compile("[0-9]{1,4}(\\.[0-9]{1,3})?");
+  private static final Pattern VERSION = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
 
   private RunnerArgv() {}
 
@@ -222,6 +259,150 @@ public final class RunnerArgv {
         "label=" + RUNNER_LABEL + "=" + require(NAME, "runner id", runnerId),
         "--filter",
         "label=" + RUN_LABEL + "=" + require(NAME, "run id", runId));
+  }
+
+  /**
+   * The name a runner container of {@code version} carries: {@code qits-ci-runner-<first 8 of the
+   * id>-<version>}. The install script composes the same string, so a re-paste and a rollover agree
+   * about which container is which.
+   */
+  public static String containerName(String runnerId, String version) {
+    String id = require(NAME, "runner id", runnerId);
+    return require(
+        NAME,
+        "container name",
+        CONTAINER_PREFIX + id.substring(0, Math.min(8, id.length())) + "-" + requireVersion(version));
+  }
+
+  /** A runner version, as a container name and a label value both take it. */
+  public static String requireVersion(String version) {
+    return require(VERSION, "runner version", version);
+  }
+
+  /** The runner's own container, narrowed to what a successor inherits — see {@link #SELF_FORMAT}. */
+  public static List<String> inspectSelf(String dockerBinary, String containerId) {
+    return List.of(
+        dockerBinary, "inspect", "--format", SELF_FORMAT, require(NAME, "container id", containerId));
+  }
+
+  /** The environment and labels an image brings by itself. */
+  public static List<String> imageConfig(String dockerBinary, String image) {
+    return List.of(
+        dockerBinary, "image", "inspect", "--format", IMAGE_CONFIG_FORMAT, requireImage(image));
+  }
+
+  /** The registry digests a pulled image is known under — what an expected digest is checked in. */
+  public static List<String> repoDigests(String dockerBinary, String image) {
+    return List.of(
+        dockerBinary, "image", "inspect", "--format", "{{json .RepoDigests}}", requireImage(image));
+  }
+
+  /** Where a container is in its life: {@code running}, {@code exited}, {@code restarting}, … */
+  public static List<String> state(String dockerBinary, String containerId) {
+    return List.of(
+        dockerBinary,
+        "inspect",
+        "--format",
+        "{{.State.Status}}",
+        require(NAME, "container id", containerId));
+  }
+
+  /**
+   * Take the restart policy off a container, so the exit it is about to make is its last. The
+   * retiring runner's own step out of the way of its successor.
+   */
+  public static List<String> noRestart(String dockerBinary, String containerId) {
+    return List.of(
+        dockerBinary, "update", "--restart=no", require(NAME, "container id", containerId));
+  }
+
+  /**
+   * Every runner container of this runner id — {@link #PROCESS_LABEL}, never the step label — one
+   * line each in {@link #PROCESS_FORMAT}. The filter is the last element, as the sweep's is.
+   */
+  public static List<String> psProcess(String dockerBinary, String runnerId) {
+    return List.of(
+        dockerBinary,
+        "ps",
+        "-a",
+        "--format",
+        PROCESS_FORMAT,
+        "--filter",
+        "label=" + PROCESS_LABEL + "=" + require(NAME, "runner id", runnerId));
+  }
+
+  /**
+   * The successor's whole {@code docker run}: the container contract, with everything that does not
+   * depend on the image taken from the running container ({@code self}) and only the name, the image
+   * and the version label new.
+   *
+   * <ul>
+   *   <li>The restart policy and the mounts are carried as they are — the docker socket and the
+   *       state volume holding {@code client.json}, on the contract's container, and whatever an
+   *       operator added.
+   *   <li>The network is carried only when it is not docker's default bridge, which the contract
+   *       leaves unspelled.
+   *   <li>The environment is the one the container was <em>given</em>, not the one the old image
+   *       brought ({@link SelfSpec} subtracts that), and never {@value #REGISTRATION_TOKEN_ENV}: a
+   *       successor starts registered.
+   *   <li>Labels likewise, with {@link #PROCESS_LABEL} and {@link #VERSION_LABEL} set here and the
+   *       step labels ({@link #RUNNER_LABEL}, {@link #RUN_LABEL}) dropped should the old container
+   *       somehow carry one — a runner the sweep can match removes itself.
+   * </ul>
+   *
+   * Every element is its own argument and nothing is a shell line, so a carried value is data.
+   */
+  public static List<String> runSuccessor(
+      String dockerBinary, String runnerId, String version, String image, SelfSpec self) {
+    List<String> argv = new ArrayList<>();
+    argv.add(dockerBinary);
+    argv.add("run");
+    argv.add("-d");
+    argv.add("--name");
+    argv.add(containerName(runnerId, version));
+    argv.add("--restart");
+    argv.add(oneLine("restart policy", self.restart()));
+    if (self.network() != null
+        && !self.network().isEmpty()
+        && !self.network().equals("default")
+        && !self.network().equals("bridge")) {
+      argv.add("--network");
+      argv.add(require(NAME, "network", self.network()));
+    }
+    Map<String, String> labels = new TreeMap<>();
+    for (Map.Entry<String, String> label : self.labels().entrySet()) {
+      String key = label.getKey();
+      if (key.equals(RUNNER_LABEL) || key.equals(RUN_LABEL)) {
+        continue;
+      }
+      labels.put(require(LABEL_KEY, "label key", key), oneLine("label value", label.getValue()));
+    }
+    labels.put(PROCESS_LABEL, require(NAME, "runner id", runnerId));
+    labels.put(VERSION_LABEL, requireVersion(version));
+    for (Map.Entry<String, String> label : labels.entrySet()) {
+      argv.add("--label");
+      argv.add(label.getKey() + "=" + label.getValue());
+    }
+    for (String bind : self.binds()) {
+      argv.add("-v");
+      argv.add(oneLine("bind", bind));
+    }
+    for (String mount : self.mounts()) {
+      argv.add("--mount");
+      argv.add(oneLine("mount", mount));
+    }
+    for (Map.Entry<String, String> variable : new TreeMap<>(self.env()).entrySet()) {
+      if (variable.getKey().equals(REGISTRATION_TOKEN_ENV)) {
+        continue;
+      }
+      argv.add("-e");
+      argv.add(
+          require(ENV_KEY, "environment key", variable.getKey())
+              + "="
+              + oneLine("environment value", variable.getValue()));
+    }
+    argv.add(requireImage(image));
+    return List.copyOf(argv);
   }
 
   /** The image belt, for the one argv here that is not built from a spec. */

@@ -1,6 +1,7 @@
 package eu.wohlben.qits.cirunner;
 
 import eu.wohlben.qits.cirunner.protocol.Capabilities;
+import eu.wohlben.qits.cirunner.protocol.CiRunnerBinary;
 import io.quarkus.runtime.Quarkus;
 import io.quarkus.runtime.QuarkusApplication;
 import io.quarkus.runtime.annotations.QuarkusMain;
@@ -8,6 +9,7 @@ import io.vertx.core.Vertx;
 import jakarta.inject.Inject;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -25,8 +27,24 @@ public class Main {
 
   private static final Logger LOG = Logger.getLogger(Main.class);
 
+  /**
+   * {@code QITS_CI_RUNNER_PRINT_VERSION=1}: print {@link CiRunnerBinary#VERSION} and exit 0 — the
+   * image's smoke probe. Answered before Quarkus starts, so it needs no other variable and prints
+   * exactly one line to stdout with no log line beside it.
+   */
+  static final String PRINT_VERSION = "QITS_CI_RUNNER_PRINT_VERSION";
+
   public static void main(String... args) {
+    if (printsVersion(System.getenv(PRINT_VERSION))) {
+      System.out.println(CiRunnerBinary.VERSION);
+      return;
+    }
     Quarkus.run(RunnerApplication.class, args);
+  }
+
+  /** {@code 1} (or {@code true}) asks for the version; anything else, unset included, does not. */
+  static boolean printsVersion(String value) {
+    return value != null && (value.strip().equals("1") || value.strip().equalsIgnoreCase("true"));
   }
 
   public static class RunnerApplication implements QuarkusApplication {
@@ -66,6 +84,9 @@ public class Main {
     @ConfigProperty(name = "qits.ci.runner.buildkit-registry-mirrors")
     Optional<String> buildkitRegistryMirrors;
 
+    @ConfigProperty(name = "qits.ci.runner.rollover-timeout")
+    Optional<String> rolloverTimeout;
+
     @ConfigProperty(name = "qits.ci.runner.heartbeat-interval-ms", defaultValue = "10000")
     long heartbeatMillis;
 
@@ -93,22 +114,28 @@ public class Main {
                 dockerTimeout.orElse(null),
                 buildkitImage.orElse(null),
                 buildkitHttpRegistries.orElse(null),
-                buildkitRegistryMirrors.orElse(null));
+                buildkitRegistryMirrors.orElse(null),
+                rolloverTimeout.orElse(null));
       } catch (RunnerEnv.Invalid invalid) {
-        // The journal is the only channel before anything is dialled, so this line is the whole
+        // The container's log is the only channel before anything is dialled, so this line is the whole
         // diagnosis an operator gets. It names the variable, never a value that could be a secret.
         LOG.errorf("ci-runner cannot start: %s. Exiting.", invalid.getMessage());
         return ExitCode.MISCONFIGURED;
       }
       Docker docker = Docker.forking(env.dockerTimeoutSeconds());
       Http http = new Http(vertx, httpTimeoutMillis);
+      Optional<String> self = SelfContainer.detect();
+      if (self.isPresent()) {
+        LOG.infof("ci-runner %s is running in container %s", CiRunnerBinary.VERSION, self.get());
+      }
       BuildPlane buildPlane =
           new BuildPlane(
               docker,
               env.dockerBinary(),
               env.buildkitImage(),
               env.buildkitHttpRegistries(),
-              env.buildkitRegistryMirrors());
+              env.buildkitRegistryMirrors(),
+              caBundleCandidates(self));
       RunnerMain runner =
           new RunnerMain(
               vertx,
@@ -122,9 +149,32 @@ public class Main {
                   new Launcher(docker, env.dockerBinary(), env.runnerId(), buildPlane),
                   new Reaper(docker, env.dockerBinary(), env.runnerId()),
                   capabilities(),
-                  client -> new Bearer(http, client, System::currentTimeMillis)));
+                  client -> new Bearer(http, client, System::currentTimeMillis),
+                  (bearer, held) ->
+                      new Rollover(
+                          docker,
+                          env.dockerBinary(),
+                          env.runnerId(),
+                          CiRunnerBinary.VERSION,
+                          self,
+                          Rollover.Settings.defaults(env.rolloverTimeoutSeconds()),
+                          bearer,
+                          held)));
       return runner.run();
     }
+  }
+
+  /**
+   * Where the builder's host CA bundle is probed — nowhere, in a container. The probe checks this
+   * process's filesystem and the bind it produces is resolved by the host's docker daemon on the
+   * host's: inside the runner's image the probe would always find the image's own Alpine bundle, and
+   * a host that keeps its bundle elsewhere (RHEL's {@code /etc/pki/…}) would get an empty directory
+   * created at the Debian path and mounted over the builder's certificates. The builder's own bundle
+   * validates every publicly-issued chain, which is the platform's edge; an operator root on the host
+   * is not reachable from here, and the README says so.
+   */
+  static List<String> caBundleCandidates(Optional<String> self) {
+    return self.isPresent() ? List.of() : BuildPlane.HOST_CA_BUNDLE_CANDIDATES;
   }
 
   /**

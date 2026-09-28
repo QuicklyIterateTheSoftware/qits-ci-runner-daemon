@@ -23,7 +23,8 @@ public record RunnerEnv(
     long dockerTimeoutSeconds,
     String buildkitImage,
     List<String> buildkitHttpRegistries,
-    List<String> buildkitRegistryMirrors) {
+    List<String> buildkitRegistryMirrors,
+    long rolloverTimeoutSeconds) {
 
   /**
    * A registry as buildkitd.toml names it: {@code host[:port]}. Checked here because the value is
@@ -35,7 +36,7 @@ public record RunnerEnv(
   private static final Pattern MIRROR_TARGET =
       Pattern.compile("[A-Za-z0-9][A-Za-z0-9.-]{0,252}(:[0-9]{1,5})?(/[A-Za-z0-9._-]+)*");
 
-  /** {@code QITS_CI_RUNNER_STATE_DIR}'s default — what the unit's {@code StateDirectory=} makes. */
+  /** {@code QITS_CI_RUNNER_STATE_DIR}'s default — where the container contract mounts the state volume. */
   public static final String DEFAULT_STATE_DIR = "/var/lib/qits-ci-runner";
 
   /**
@@ -47,6 +48,13 @@ public record RunnerEnv(
 
   /** The advertised slot count when the operator set none. */
   public static final int DEFAULT_SLOTS = 1;
+
+  /**
+   * How long a successor has to take over before it is removed — {@code
+   * QITS_CI_RUNNER_ROLLOVER_TIMEOUT}. Three minutes is a pull-free container start, a registration
+   * that is not needed, a token mint and a WebSocket upgrade, with room for a slow host.
+   */
+  public static final int DEFAULT_ROLLOVER_TIMEOUT_SECONDS = 180;
 
   /** A misconfiguration, carrying the one line the runner prints before exiting 2. */
   public static final class Invalid extends Exception {
@@ -95,6 +103,28 @@ public record RunnerEnv(
       String buildkitHttpRegistries,
       String buildkitRegistryMirrors)
       throws Invalid {
+    return parse(
+        url, runnerId, registrationToken, stateDir, slots, dockerBinary, dockerTimeout,
+        buildkitImage, buildkitHttpRegistries, buildkitRegistryMirrors, null);
+  }
+
+  /**
+   * The same, with {@code QITS_CI_RUNNER_ROLLOVER_TIMEOUT}: seconds a successor container has to
+   * take over before the old process removes it and stays (see {@link Rollover}).
+   */
+  public static RunnerEnv parse(
+      String url,
+      String runnerId,
+      String registrationToken,
+      String stateDir,
+      String slots,
+      String dockerBinary,
+      String dockerTimeout,
+      String buildkitImage,
+      String buildkitHttpRegistries,
+      String buildkitRegistryMirrors,
+      String rolloverTimeout)
+      throws Invalid {
     if (blank(url)) {
       throw new Invalid("QITS_CI_RUNNER_URL is not set");
     }
@@ -119,7 +149,11 @@ public record RunnerEnv(
         positive("QITS_CI_RUNNER_DOCKER_TIMEOUT", stripSeconds(dockerTimeout), 120),
         blank(buildkitImage) ? DEFAULT_BUILDKIT_IMAGE : buildkitImage.trim(),
         httpRegistries(buildkitHttpRegistries),
-        mirrors(buildkitRegistryMirrors));
+        mirrors(buildkitRegistryMirrors),
+        positive(
+            "QITS_CI_RUNNER_ROLLOVER_TIMEOUT",
+            stripSeconds(rolloverTimeout),
+            DEFAULT_ROLLOVER_TIMEOUT_SECONDS));
   }
 
   private static List<String> httpRegistries(String value) throws Invalid {

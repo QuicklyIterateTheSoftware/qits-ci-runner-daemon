@@ -20,6 +20,11 @@ import java.util.List;
  * {@code .out} and {@code .err} are the exit code, stdout and stderr. No file is exit 0 and silence.
  * {@code answers/<key>.sleep} makes the call hang that many seconds, for the deadline.
  *
+ * <p>A more specific answer wins when there is one: {@code answers/<key>+<last argument>}, the last
+ * argument with everything outside {@code [A-Za-z0-9._-]} made {@code _} — the object a call is
+ * about, so one {@code inspect} of the runner's own container and another of a predecessor can
+ * answer differently ({@link #answerFor}).
+ *
  * <p>The production {@link Docker#forking} runs it, so the seam under test is the real one.
  */
 final class FakeDocker {
@@ -36,7 +41,10 @@ final class FakeDocker {
       fi
       key="$1"
       case "$1" in image|network|volume) key="$1-$2";; esac
-      a="$dir/answers/$key"
+      for last in "$@"; do :; done
+      obj=$(printf '%s' "$last" | tr -c 'A-Za-z0-9._-' '_')
+      a="$dir/answers/$key+$obj"
+      [ -f "$a.code" ] || [ -f "$a.out" ] || a="$dir/answers/$key"
       [ -f "$a.sleep" ] && sleep "$(cat "$a.sleep")"
       [ -f "$a.out" ] && cat "$a.out"
       [ -f "$a.err" ] && cat "$a.err" >&2
@@ -70,6 +78,12 @@ final class FakeDocker {
     return this;
   }
 
+  /** Make {@code key} answer this way only when its last argument is {@code object}. */
+  FakeDocker answerFor(String key, String object, int code, String out, String err)
+      throws IOException {
+    return answer(key + "+" + object.replaceAll("[^A-Za-z0-9._-]", "_"), code, out, err);
+  }
+
   FakeDocker hang(String key, int seconds) throws IOException {
     Files.writeString(dir.resolve("answers").resolve(key + ".sleep"), String.valueOf(seconds));
     return this;
@@ -101,6 +115,15 @@ final class FakeDocker {
         .map(FakeDocker::withoutConfig)
         .filter(c -> !c.isEmpty() && c.getFirst().equals(verb))
         .toList();
+  }
+
+  /** {@link #calls(String)} for a polling lambda, which cannot throw. */
+  List<List<String>> callsQuietly(String verb) {
+    try {
+      return calls(verb);
+    } catch (IOException e) {
+      return List.of();
+    }
   }
 
   /** {@code call} without a leading {@code --config <dir>}. */

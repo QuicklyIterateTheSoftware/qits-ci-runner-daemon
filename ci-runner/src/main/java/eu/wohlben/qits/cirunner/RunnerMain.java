@@ -13,7 +13,9 @@ import eu.wohlben.qits.cirunner.protocol.Nothing;
 import eu.wohlben.qits.cirunner.protocol.Reap;
 import eu.wohlben.qits.cirunner.protocol.Released;
 import eu.wohlben.qits.cirunner.protocol.Reserve;
+import eu.wohlben.qits.cirunner.protocol.Retire;
 import eu.wohlben.qits.cirunner.protocol.Take;
+import eu.wohlben.qits.cirunner.protocol.Upgrade;
 import io.vertx.core.Vertx;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -25,8 +27,11 @@ import org.jboss.logging.Logger;
  *
  * <pre>
  *   register (once) → [ sweep → dial → Hello → Ack{slots} → Backlog / Reserve / Take / Launch /
- *   Reap / Cancel / Released … → close ] forever
+ *   Reap / Cancel / Released … → close ] until Retire
  * </pre>
+ *
+ * <p>An {@code Upgrade} makes the process drain and hands the rest to {@link Rollover}: a successor
+ * container is started once no run is held, and a {@code Retire} is the one orderly way out.
  *
  * <p><b>qits-ci keeps the run; the runner keeps the containers.</b> Nothing here knows what a step
  * is for, how many a run has or whether one passed — qits-ci drives each run and the step's own
@@ -49,7 +54,8 @@ public final class RunnerMain implements ControlSocket.Listener {
       Launcher launcher,
       Reaper reaper,
       Capabilities capabilities,
-      java.util.function.Function<ClientCredentials, Bearer> bearer) {}
+      java.util.function.Function<ClientCredentials, Bearer> bearer,
+      Rollover.Factory rollover) {}
 
   private final Vertx vertx;
   private final RunnerEnv env;
@@ -70,6 +76,7 @@ public final class RunnerMain implements ControlSocket.Listener {
 
   private final CompletableFuture<Integer> exit = new CompletableFuture<>();
   private volatile ControlSocket socket;
+  private volatile Rollover rollover;
 
   public RunnerMain(Vertx vertx, RunnerEnv env, Parts parts) {
     this.vertx = vertx;
@@ -90,6 +97,7 @@ public final class RunnerMain implements ControlSocket.Listener {
       return failed.exitCode();
     }
     Bearer bearer = parts.bearer().apply(client);
+    rollover = parts.rollover().create(bearer::token, reservations::held);
     socket =
         new ControlSocket(
             vertx, client.socketUrl(), bearer::token, parts.settings().apply(client), this);
@@ -106,6 +114,10 @@ public final class RunnerMain implements ControlSocket.Listener {
       ControlSocket s = socket;
       if (s != null) {
         s.stop();
+      }
+      Rollover r = rollover;
+      if (r != null) {
+        r.shutdown();
       }
       workers.shutdownNow();
     }
@@ -151,6 +163,17 @@ public final class RunnerMain implements ControlSocket.Listener {
       case Released released -> {
         LOG.infof("ci-runner released run %s", released.runId());
         reserveIf(reservations.onReleased(released.runId()));
+        rollover.poke();
+      }
+      case Upgrade upgrade -> {
+        // At once, on the loop: not one more Reserve goes out after this frame.
+        reservations.drain();
+        rollover.upgrade(upgrade);
+      }
+      case Retire retire -> {
+        if (rollover.retire(retire)) {
+          workers.execute(this::leave);
+        }
       }
       default ->
           // Everything else in the sealed set is runner→host; a host echoing one is not a
@@ -170,13 +193,35 @@ public final class RunnerMain implements ControlSocket.Listener {
     }
     LOG.infof("ci-runner connected slots=%d", ack.slots());
     reserveIf(reservations.onAck(ack.slots()));
+    // The first Ack is this version proven on the wire, so whatever this runner ran before it is
+    // done with. Once per process (Rollover keeps the latch), and off the loop: it can wait a minute.
+    workers.execute(rollover::removePredecessors);
+  }
+
+  /**
+   * The one orderly exit: no restart for this container, then the socket closed for good — no sweep
+   * and no redial on the way out, because the containers under this runner's label are the
+   * successor's now — then exit 0.
+   */
+  private void leave() {
+    rollover.leave();
+    ControlSocket s = socket;
+    if (s != null) {
+      s.stop();
+    }
+    LOG.info("ci-runner exits: retired");
+    exit.complete(ExitCode.OK);
   }
 
   @Override
   public void onClosed() {
     // The host fails every run this runner held; the next session's sweep removes their
-    // containers. Nothing is carried across.
+    // containers. Nothing is carried across — so a draining runner holds nothing any more either.
     reservations.reset();
+    Rollover r = rollover;
+    if (r != null) {
+      r.poke();
+    }
   }
 
   private void reserveIf(boolean reserve) {

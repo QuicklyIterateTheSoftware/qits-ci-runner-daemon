@@ -30,9 +30,9 @@ import org.jboss.logging.Logger;
  * <p><b>Rotation is a new token, and a new token re-registers.</b> The file records a SHA-256 of the
  * token that produced it. On a start where the environment carries a token whose hash differs, the
  * operator pasted a fresh install line (the CI UI's "replace registration token"), and the runner
- * registers with it and replaces the file; the same token as before is the same env file after a
- * reboot, and changes nothing. That is what lets the install script rewrite only the env file and
- * restart the unit, with no knowledge of the state directory.
+ * registers with it and replaces the file; the same token as before is the same container after a
+ * restart, and changes nothing. (The install script also removes {@code client.json} on a re-run, so
+ * a pasted line always registers; the hash is what keeps a restart from doing so.)
  */
 public final class Registration {
 
@@ -41,7 +41,7 @@ public final class Registration {
   /** The file under the state directory. */
   public static final String CLIENT_FILE = "client.json";
 
-  /** How much of a refusal's body the journal quotes. */
+  /** How much of a refusal's body the log quotes. */
   static final int MAX_QUOTED = 500;
 
   /** A registration that cannot proceed, with the exit code and the one line to print. */

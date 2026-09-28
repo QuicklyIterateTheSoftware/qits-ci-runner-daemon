@@ -1,6 +1,7 @@
 package eu.wohlben.qits.cirunner;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import eu.wohlben.qits.cirunner.protocol.Ack;
@@ -19,13 +20,18 @@ import eu.wohlben.qits.cirunner.protocol.Reap;
 import eu.wohlben.qits.cirunner.protocol.Reaped;
 import eu.wohlben.qits.cirunner.protocol.Released;
 import eu.wohlben.qits.cirunner.protocol.Reserve;
+import eu.wohlben.qits.cirunner.protocol.Retire;
 import eu.wohlben.qits.cirunner.protocol.Take;
+import eu.wohlben.qits.cirunner.protocol.Upgrade;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import io.vertx.core.Vertx;
+import io.vertx.core.json.JsonObject;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
@@ -52,6 +58,12 @@ class RunnerMainTest {
   @TempDir Path dockerDir;
 
   private static final Capabilities CAPS = new Capabilities(true, "amd64", "linux", Map.of());
+
+  /** The runner's own container, as HOSTNAME would name it. */
+  private static final String SELF = "0123456789ab";
+
+  private Optional<String> self = Optional.of(SELF);
+  private Rollover.Settings rolloverSettings = new Rollover.Settings(100, 400, 3_000, 3_000, 50, 5_000);
 
   @BeforeEach
   void setUp() throws Exception {
@@ -85,7 +97,17 @@ class RunnerMainTest {
                 new Launcher(d, docker.binary, "r1", new BuildPlane(d, docker.binary, "moby/buildkit:v0.33.0")),
                 new Reaper(d, docker.binary, "r1"),
                 CAPS,
-                client -> new Bearer(http, client, System::currentTimeMillis)));
+                client -> new Bearer(http, client, System::currentTimeMillis),
+                (bearer, held) ->
+                    new Rollover(
+                        d,
+                        docker.binary,
+                        "r1",
+                        CiRunnerBinary.VERSION,
+                        self,
+                        rolloverSettings,
+                        bearer,
+                        held)));
     exit = CompletableFuture.supplyAsync(runner::run);
     return exit;
   }
@@ -121,12 +143,13 @@ class RunnerMainTest {
         new Hello(CiRunnerBinary.VERSION, CiRunnerProtocol.CAPABILITY_VERSION, 2, CAPS), hello);
     assertEquals("Bearer runner-access-token", host.upgradeHeaders.get("Authorization"));
     assertTrue(Files.exists(state.resolve("client.json")));
-    // The sweep ran before the Hello, by the runner's own label only.
+    // The sweep ran before the Hello, by the runner's own label only. (What follows the Ack is the
+    // predecessor sweep, by the process label — see the rollover tests below.)
     assertEquals(
         List.of(
             List.of("ps", "-aq", "--filter", "label=qits.ci.runner=r1"),
             List.of("rm", "-f", "leftover1")),
-        docker.calls());
+        docker.calls().subList(0, 2));
   }
 
   @Test
@@ -263,5 +286,328 @@ class RunnerMainTest {
     ackWith(1, 0);
     start("t", 100);
     host.await(Heartbeat.class, 3);
+  }
+
+  @Test
+  void anUnknownFrameTypeIsDroppedAndTheSessionCarriesOn() throws Exception {
+    // What a runner released before Upgrade existed does with one: its codec answers UNKNOWN_TYPE
+    // and ControlSocket drops the frame. Shown with a type this codec does not know either.
+    ackWith(1, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+
+    host.sendRaw(
+        "{\"type\":\"upgradeV2\",\"version\":\"2\",\"image\":\"r/qits/qits-ci-runner:2\"}");
+    host.send(new Backlog(1));
+    host.await(Reserve.class);
+    assertEquals(1, host.upgrades.get(), "still the first session: nothing was dropped but the frame");
+    assertFalse(exit.isDone());
+  }
+
+  // ---- self-update ------------------------------------------------------------------------------
+
+  private static final String NEXT = "2026.999.1";
+  private static final String IMAGE = "registry.example:5000/qits/qits-ci-runner:" + NEXT;
+  private static final String DIGEST =
+      "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  private static final String SUCCESSOR = "qits-ci-runner-r1-" + NEXT;
+
+  /**
+   * A fake docker that answers like the runner's own container: its inspect (what the install
+   * script started), its old image's config, and the pulled image's digest.
+   */
+  private void runnerContainer() throws Exception {
+    docker.answerFor(
+        "inspect",
+        SELF,
+        0,
+        new JsonObject()
+                .put("id", SELF + "0".repeat(52))
+                .put("image", "sha256:old")
+                .put(
+                    "env",
+                    List.of(
+                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                        "DOCKER_VERSION=29.8.1",
+                        "QITS_CI_RUNNER_URL=https://ci.qits.example.eu",
+                        "QITS_CI_RUNNER_ID=r1",
+                        "QITS_CI_RUNNER_SLOTS=2",
+                        "QITS_CI_RUNNER_REGISTRATION_TOKEN=qits_tok_SPENT"))
+                .put(
+                    "labels",
+                    Map.of(
+                        "qits.ci.runner.process", "r1",
+                        "qits.ci.runner.version", CiRunnerBinary.VERSION,
+                        "org.opencontainers.image.version", "29.8.1"))
+                .put(
+                    "binds",
+                    List.of(
+                        "/var/run/docker.sock:/var/run/docker.sock",
+                        "qits-ci-runner-state-r1:/var/lib/qits-ci-runner"))
+                .putNull("mounts")
+                .put("restart", Map.of("Name", "unless-stopped", "MaximumRetryCount", 0))
+                .put("network", "default")
+                .encode()
+            + "\n",
+        "");
+    docker.answerFor(
+        "image-inspect",
+        "sha256:old",
+        0,
+        new JsonObject()
+                .put(
+                    "env",
+                    List.of(
+                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                        "DOCKER_VERSION=29.8.1"))
+                .put("labels", Map.of("org.opencontainers.image.version", "29.8.1"))
+                .encode()
+            + "\n",
+        "");
+    docker.answerFor(
+        "image-inspect", IMAGE, 0, "[\"registry.example:5000/qits/qits-ci-runner@" + DIGEST + "\"]\n", "");
+  }
+
+  private static final List<String> SUCCESSOR_RUN =
+      List.of(
+          "run",
+          "-d",
+          "--name",
+          SUCCESSOR,
+          "--restart",
+          "unless-stopped",
+          "--label",
+          "qits.ci.runner.process=r1",
+          "--label",
+          "qits.ci.runner.version=" + NEXT,
+          "-v",
+          "/var/run/docker.sock:/var/run/docker.sock",
+          "-v",
+          "qits-ci-runner-state-r1:/var/lib/qits-ci-runner",
+          "-e",
+          "QITS_CI_RUNNER_ID=r1",
+          "-e",
+          "QITS_CI_RUNNER_SLOTS=2",
+          "-e",
+          "QITS_CI_RUNNER_URL=https://ci.qits.example.eu",
+          IMAGE);
+
+  private void awaitCall(java.util.function.Predicate<List<List<String>>> condition)
+      throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+    while (!condition.test(docker.calls()) && System.nanoTime() < deadline) {
+      Thread.sleep(20);
+    }
+    assertTrue(condition.test(docker.calls()), () -> "docker calls: " + calls());
+  }
+
+  private String calls() {
+    try {
+      return docker.calls().toString();
+    } catch (Exception e) {
+      return e.toString();
+    }
+  }
+
+  private static boolean has(List<List<String>> calls, List<String> call) {
+    return calls.stream().map(FakeDocker::withoutConfig).anyMatch(call::equals);
+  }
+
+  /** Take one run and hold it; answers once the runner counts it. */
+  private void holdARun() throws Exception {
+    host.script =
+        (h, message) -> {
+          if (message instanceof Hello) {
+            h.send(new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 2));
+            h.send(new Backlog(1));
+          } else if (message instanceof Reserve) {
+            h.send(new Take("run-a", "repo", "main", "abc"));
+          }
+        };
+    start("t", 10_000);
+    host.await(Reserve.class);
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (runner.reservations().held() == 0 && System.nanoTime() < deadline) {
+      Thread.sleep(20);
+    }
+    assertEquals(1, runner.reservations().held());
+  }
+
+  @Test
+  void anUpgradeDrainsAndStartsTheSuccessorOnlyOnceTheLastHeldRunIsReleased() throws Exception {
+    runnerContainer();
+    holdARun();
+
+    host.send(new Upgrade(NEXT, IMAGE, DIGEST));
+    host.send(new Backlog(5));
+    awaitCall(c -> has(c, List.of("pull", IMAGE)));
+    Thread.sleep(300);
+    assertEquals(1, host.all(Reserve.class).size(), "a draining runner reserves nothing");
+    assertTrue(docker.calls("run").isEmpty(), "no successor while a run is held");
+
+    host.send(new Released("run-a"));
+    awaitCall(c -> !docker.callsQuietly("run").isEmpty());
+    assertEquals(SUCCESSOR_RUN, docker.calls("run").getFirst());
+    assertEquals(1, host.all(Reserve.class).size(), "a released slot is not refilled while draining");
+    assertFalse(exit.isDone(), "the old process stays until it is retired");
+  }
+
+  @Test
+  void theUpgradePullRunsUnderAThrowawayLoginMadeOfTheRunnersOwnBearer() throws Exception {
+    runnerContainer();
+    ackWith(2, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+
+    host.send(new Upgrade(NEXT, IMAGE, null));
+    awaitCall(c -> !docker.callsQuietly("run").isEmpty());
+
+    List<String> pull =
+        docker.calls().stream().filter(c -> c.contains("pull")).findFirst().orElseThrow();
+    assertEquals("--config", pull.get(0));
+    assertEquals(List.of("pull", IMAGE), pull.subList(2, 4));
+    assertFalse(Files.exists(Path.of(pull.get(1))), "the login directory is removed after the pull");
+    List<String> config = docker.configs().getFirst();
+    assertEquals("700 600", config.get(0), "directory 0700, config.json 0600");
+    String auth =
+        Base64.getEncoder()
+            .encodeToString("token:runner-access-token".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+    assertEquals(
+        new JsonObject()
+            .put("auths", new JsonObject().put("registry.example:5000", new JsonObject().put("auth", auth))),
+        new JsonObject(config.get(1)));
+    assertTrue(
+        docker.calls().stream().flatMap(List::stream).noneMatch(a -> a.contains("runner-access-token")),
+        "the bearer is in no argv");
+  }
+
+  @Test
+  void aPulledImageWithAnotherDigestIsNeverStartedAndThePullIsRetried() throws Exception {
+    runnerContainer();
+    docker.answerFor(
+        "image-inspect", IMAGE, 0, "[\"registry.example:5000/qits/qits-ci-runner@sha256:beef\"]\n", "");
+    ackWith(2, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+
+    host.send(new Upgrade(NEXT, IMAGE, DIGEST.substring("sha256:".length())));
+    awaitCall(c -> docker.callsQuietly("pull").size() >= 2);
+    assertTrue(docker.calls("run").isEmpty(), "an image that is not the expected one is not run");
+  }
+
+  @Test
+  void aRetireWithinTheWatchTakesTheRestartPolicyAwayAndExitsZero() throws Exception {
+    runnerContainer();
+    ackWith(2, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+    host.send(new Upgrade(NEXT, IMAGE, DIGEST));
+    awaitCall(c -> !docker.callsQuietly("run").isEmpty());
+
+    host.send(new Retire("superseded by " + NEXT));
+    assertEquals(ExitCode.OK, exit.get(10, TimeUnit.SECONDS));
+    runner = null;
+    assertTrue(has(docker.calls(), List.of("update", "--restart=no", SELF)), this::calls);
+    List<List<String>> calls = docker.calls();
+    assertFalse(
+        calls.subList(calls.indexOf(SUCCESSOR_RUN) + 1, calls.size())
+            .contains(List.of("rm", "-f", SUCCESSOR)),
+        "the successor is left running");
+  }
+
+  @Test
+  void aSuccessorThatDoesNotTakeOverIsRemovedAndTheRunnerStaysDrainingAndRetries()
+      throws Exception {
+    rolloverSettings = new Rollover.Settings(100, 400, 300, 3_000, 50, 5_000);
+    runnerContainer();
+    ackWith(2, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+    host.send(new Upgrade(NEXT, IMAGE, DIGEST));
+
+    // Started, not retired within the watch, removed — and started again on the retry.
+    awaitCall(c -> docker.callsQuietly("run").size() >= 2);
+    List<List<String>> calls = docker.calls();
+    int firstRun = calls.indexOf(SUCCESSOR_RUN);
+    assertTrue(
+        calls.subList(firstRun + 1, calls.size()).contains(List.of("rm", "-f", SUCCESSOR)),
+        this::calls);
+    assertFalse(has(calls, List.of("update", "--restart=no", SELF)), "it never took itself out");
+    host.send(new Backlog(3));
+    Thread.sleep(300);
+    assertTrue(host.all(Reserve.class).isEmpty(), "still draining");
+    assertFalse(exit.isDone());
+  }
+
+  @Test
+  void aRetireWhileTheUpgradeHasNoSuccessorRunningIsIgnored() throws Exception {
+    runnerContainer();
+    holdARun();
+    host.send(new Upgrade(NEXT, IMAGE, DIGEST));
+    awaitCall(c -> has(c, List.of("pull", IMAGE)));
+
+    host.send(new Retire("a runner of " + NEXT + " said Hello"));
+    Thread.sleep(500);
+    assertFalse(exit.isDone(), "leaving now would leave the host with no runner at all");
+    assertFalse(has(docker.calls(), List.of("update", "--restart=no", SELF)));
+  }
+
+  @Test
+  void aRetireWithNoUpgradeAskedForIsTheSameOrderlyExit() throws Exception {
+    ackWith(1, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+
+    host.send(new Retire("decommissioned"));
+    assertEquals(ExitCode.OK, exit.get(10, TimeUnit.SECONDS));
+    runner = null;
+    assertTrue(has(docker.calls(), List.of("update", "--restart=no", SELF)), this::calls);
+  }
+
+  @Test
+  void theFirstAckRemovesExitedAndLingeringPredecessorsAndNeverItself() throws Exception {
+    rolloverSettings = new Rollover.Settings(100, 400, 3_000, 400, 50, 5_000);
+    docker.answerFor(
+        "ps",
+        "label=qits.ci.runner.process=r1",
+        0,
+        String.join(
+            "\n",
+            "0123456789ab|" + CiRunnerBinary.VERSION + "|running",
+            "aaaaaaaaaaaa|2026.900.1|exited",
+            "bbbbbbbbbbbb|2026.900.2|running",
+            "cccccccccccc|2026.900.3|running",
+            ""),
+        "");
+    docker.answerFor("inspect", "bbbbbbbbbbbb", 0, "exited\n", "");
+    docker.answerFor("inspect", "cccccccccccc", 0, "running\n", "");
+    ackWith(1, 0);
+    start("t", 10_000);
+
+    awaitCall(c -> has(c, List.of("rm", "-f", "cccccccccccc")));
+    List<List<String>> calls = docker.calls();
+    assertTrue(
+        calls.contains(
+            List.of(
+                "ps",
+                "-a",
+                "--format",
+                "{{.ID}}|{{.Label \"qits.ci.runner.version\"}}|{{.State}}",
+                "--filter",
+                "label=qits.ci.runner.process=r1")),
+        this::calls);
+    assertTrue(calls.contains(List.of("rm", "-f", "aaaaaaaaaaaa")), "the exited predecessor");
+    assertTrue(calls.contains(List.of("rm", "-f", "bbbbbbbbbbbb")), "the one that exited while waited on");
+    int waited = calls.indexOf(List.of("inspect", "--format", "{{.State.Status}}", "bbbbbbbbbbbb"));
+    assertTrue(waited >= 0 && waited < calls.indexOf(List.of("rm", "-f", "bbbbbbbbbbbb")));
+    assertFalse(calls.contains(List.of("rm", "-f", SELF)), "never itself");
+    // A reconnect's Ack does not look for predecessors again: once per process.
+    host.socket.close();
+    host.await(Hello.class, 2);
+    Thread.sleep(300);
+    assertEquals(
+        1,
+        docker.calls("ps").stream().filter(c -> c.contains("label=qits.ci.runner.process=r1")).count(),
+        this::calls);
   }
 }

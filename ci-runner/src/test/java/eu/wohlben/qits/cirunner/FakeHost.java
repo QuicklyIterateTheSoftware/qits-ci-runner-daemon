@@ -124,6 +124,11 @@ final class FakeHost implements AutoCloseable {
     }
   }
 
+  /** A frame as text, bypassing the codec — what a host a version ahead of the runner sends. */
+  void sendRaw(String json) {
+    socket.writeTextMessage(json);
+  }
+
   void send(CiRunnerMessage message) {
     socket.writeTextMessage(new JsonObject(CiRunnerCodec.encode(message)).encode());
   }

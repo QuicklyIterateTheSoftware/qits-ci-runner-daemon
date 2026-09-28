@@ -7,7 +7,7 @@ import java.net.URI;
  * The idp client qits-ci commissioned for this runner, as the register door answered it and as
  * {@code client.json} keeps it. {@code registeredWith} is not the token — it is a SHA-256 of the
  * registration token that produced this client, which is how {@link Registration} tells "the same
- * env file after a reboot" from "an operator pasted a new token".
+ * container after a restart" from "an operator pasted a new token".
  */
 public record ClientCredentials(
     String clientId,
@@ -19,7 +19,7 @@ public record ClientCredentials(
 
   /**
    * Read a client from its JSON. Refuses anything this binary could not dial with, so a truncated
-   * or hand-edited file is one line in the journal rather than a reconnect loop against nowhere.
+   * or hand-edited file is one line in the log rather than a reconnect loop against nowhere.
    */
   public static ClientCredentials fromJson(JsonObject json, String registeredWith) {
     ClientCredentials client =

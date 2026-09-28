@@ -181,4 +181,111 @@ class RunnerArgvTest {
             "--filter", "label=qits.ci.runner.run=run-1"),
         RunnerArgv.psRun("docker", "r1", "run-1"));
   }
+
+  // ---- the runner's own container ---------------------------------------------------------------
+
+  private static SelfSpec self(Map<String, String> labels) {
+    return new SelfSpec(
+        "0123456789ab",
+        "sha256:old",
+        Map.of(
+            "QITS_CI_RUNNER_URL", "https://ci.qits.example.eu",
+            "QITS_CI_RUNNER_ID", "3f2a9c1e-0000-4000-8000-000000000001",
+            "QITS_CI_RUNNER_SLOTS", "2",
+            "QITS_CI_RUNNER_REGISTRATION_TOKEN", "qits_tok_SPENT"),
+        labels,
+        List.of(
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "qits-ci-runner-state-3f2a9c1e:/var/lib/qits-ci-runner"),
+        List.of(),
+        "unless-stopped",
+        "default");
+  }
+
+  @Test
+  void theSuccessorIsTheContainerContractWithANewImageNameAndVersionAndNoToken() {
+    assertEquals(
+        List.of(
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            "qits-ci-runner-3f2a9c1e-2026.929.1",
+            "--restart",
+            "unless-stopped",
+            "--label",
+            "qits.ci.runner.process=3f2a9c1e-0000-4000-8000-000000000001",
+            "--label",
+            "qits.ci.runner.version=2026.929.1",
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "-v",
+            "qits-ci-runner-state-3f2a9c1e:/var/lib/qits-ci-runner",
+            "-e",
+            "QITS_CI_RUNNER_ID=3f2a9c1e-0000-4000-8000-000000000001",
+            "-e",
+            "QITS_CI_RUNNER_SLOTS=2",
+            "-e",
+            "QITS_CI_RUNNER_URL=https://ci.qits.example.eu",
+            "registry.qits.example.eu/qits/qits-ci-runner:2026.929.1"),
+        RunnerArgv.runSuccessor(
+            "docker",
+            "3f2a9c1e-0000-4000-8000-000000000001",
+            "2026.929.1",
+            "registry.qits.example.eu/qits/qits-ci-runner:2026.929.1",
+            self(
+                Map.of(
+                    "qits.ci.runner.process", "3f2a9c1e-0000-4000-8000-000000000001",
+                    "qits.ci.runner.version", "2026.928.93942"))));
+  }
+
+  /**
+   * The boot sweep removes every container labelled {@code qits.ci.runner=<id>}. A runner container
+   * that carried it would be removed by its own runner at every reconnect — so no runner container
+   * ever does, even when the one it inherits from somehow did.
+   */
+  @Test
+  void aRunnerContainerCanNeverMatchItsOwnSweep() {
+    String sweep = RunnerArgv.psOwn("docker", "r1").getLast();
+    assertEquals("label=qits.ci.runner=r1", sweep);
+    List<String> successor =
+        RunnerArgv.runSuccessor(
+            "docker",
+            "r1",
+            "2",
+            "r/qits/qits-ci-runner:2",
+            self(Map.of("qits.ci.runner", "r1", "qits.ci.runner.run", "run-1", "keep", "me")));
+    for (int i = 0; i < successor.size() - 1; i++) {
+      if (successor.get(i).equals("--label")) {
+        String label = successor.get(i + 1);
+        assertFalse(label.startsWith("qits.ci.runner="), label);
+        assertFalse(label.startsWith("qits.ci.runner.run="), label);
+      }
+    }
+    assertTrue(successor.contains("keep=me"), "an operator's own label is carried");
+    assertTrue(successor.contains("qits.ci.runner.process=r1"));
+    assertFalse(("label=" + RunnerArgv.PROCESS_LABEL + "=r1").equals(sweep));
+    assertEquals("label=qits.ci.runner.process=r1", RunnerArgv.psProcess("docker", "r1").getLast());
+  }
+
+  @Test
+  void aSuccessorOnAnOperatorsNetworkStaysOnIt() {
+    SelfSpec onNet =
+        new SelfSpec("i", "sha256:old", Map.of(), Map.of(), List.of(), List.of("type=volume,source=x,target=/x"), "always", "qits-net");
+    List<String> argv = RunnerArgv.runSuccessor("docker", "r1", "2", "r/i:2", onNet);
+    assertEquals(
+        List.of(
+            "docker", "run", "-d", "--name", "qits-ci-runner-r1-2", "--restart", "always",
+            "--network", "qits-net", "--label", "qits.ci.runner.process=r1", "--label",
+            "qits.ci.runner.version=2", "--mount", "type=volume,source=x,target=/x", "r/i:2"),
+        argv);
+  }
+
+  @Test
+  void aVersionOutsideItsCharsetNamesNoContainer() {
+    assertThrows(
+        IllegalArgumentException.class, () -> RunnerArgv.containerName("r1", "2;rm -rf /"));
+    assertThrows(IllegalArgumentException.class, () -> RunnerArgv.containerName("r1", ""));
+    assertEquals("qits-ci-runner-abcdefgh-1.2", RunnerArgv.containerName("abcdefghijk", "1.2"));
+  }
 }
