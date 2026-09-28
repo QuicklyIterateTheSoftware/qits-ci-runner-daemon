@@ -99,6 +99,16 @@ public final class CiRunnerCodec {
         map.put(Field.TYPE, Type.RELEASED);
         map.put(Field.RUN_ID, m.runId());
       }
+      case Upgrade m -> {
+        map.put(Field.TYPE, Type.UPGRADE);
+        map.put(Field.VERSION, m.version());
+        map.put(Field.BINARY_URL, m.binaryUrl());
+        map.put(Field.SHA256, m.sha256());
+      }
+      case Retire m -> {
+        map.put(Field.TYPE, Type.RETIRE);
+        map.put(Field.REASON, m.reason());
+      }
     }
     return map;
   }
@@ -155,6 +165,10 @@ public final class CiRunnerCodec {
                 str(map, Field.CONTAINER_NAME));
         case Type.CANCEL -> new Cancel(str(map, Field.RUN_ID));
         case Type.RELEASED -> new Released(str(map, Field.RUN_ID));
+        case Type.UPGRADE ->
+            new Upgrade(
+                str(map, Field.VERSION), str(map, Field.BINARY_URL), str(map, Field.SHA256));
+        case Type.RETIRE -> new Retire(str(map, Field.REASON));
         default ->
             throw new CiRunnerDecodeException(
                 Reason.UNKNOWN_TYPE, type, "unknown ci-runner message type: " + type);

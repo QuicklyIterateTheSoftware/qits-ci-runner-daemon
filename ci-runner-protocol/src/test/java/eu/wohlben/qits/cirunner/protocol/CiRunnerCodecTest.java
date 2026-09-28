@@ -68,7 +68,13 @@ class CiRunnerCodecTest {
             new Launch("run-1", 1, WorkloadSpec.of("alpine:3", "qits-ci-x-1")),
             new Reap("run-1", 2, "qits-ci-run-1-abc-2"),
             new Cancel("run-1"),
-            new Released("run-1"));
+            new Released("run-1"),
+            new Upgrade(
+                "2026.928.120000",
+                "https://registry.qits.example.eu/artifacts/daemons/qits-ci-runner/2026.928.120000",
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+            new Upgrade("2026.928.120000", "https://registry.example/x", null),
+            new Retire("superseded by 2026.928.120000"));
     for (CiRunnerMessage message : all) {
       assertEquals(message, roundTrip(message), () -> "did not round-trip: " + message);
     }
@@ -78,7 +84,7 @@ class CiRunnerCodecTest {
   void everyPermittedTypeIsCoveredByTheRoundTrip() {
     // A new record added to the sealed set without a case above would still compile the codec's
     // switch only if it had an arm; this pins that the test list grows with it.
-    assertEquals(14, CiRunnerMessage.class.getPermittedSubclasses().length);
+    assertEquals(16, CiRunnerMessage.class.getPermittedSubclasses().length);
   }
 
   @Test
@@ -89,6 +95,59 @@ class CiRunnerCodecTest {
     assertEquals(
         CiRunnerProtocol.Type.RELEASED,
         CiRunnerCodec.encode(new Released("r")).get(CiRunnerProtocol.Field.TYPE));
+  }
+
+  /**
+   * The self-update frames are how a runner of ANY older version learns it must update, so their
+   * wire shape is pinned here as literals — not through the constants a rename would move with it.
+   */
+  @Test
+  void theSelfUpdateFramesKeepTheirFrozenWireShape() {
+    Map<String, Object> upgrade = new LinkedHashMap<>();
+    upgrade.put("type", "upgrade");
+    upgrade.put("version", "2");
+    upgrade.put("binaryUrl", "https://r/x");
+    upgrade.put("sha256", "ab");
+    assertEquals(upgrade, CiRunnerCodec.encode(new Upgrade("2", "https://r/x", "ab")));
+    assertEquals(new Upgrade("2", "https://r/x", "ab"), CiRunnerCodec.decode(upgrade));
+
+    assertEquals(
+        Map.of("type", "retire", "reason", "superseded"),
+        CiRunnerCodec.encode(new Retire("superseded")));
+    assertEquals(
+        new Retire("superseded"), CiRunnerCodec.decode(Map.of("type", "retire", "reason", "superseded")));
+
+    assertEquals(
+        "1.0",
+        CiRunnerCodec.encode(new Hello("1.0", 1, 1, null)).get("runnerVersion"),
+        "Hello.runnerVersion is what the host compares with its pin");
+  }
+
+  @Test
+  void anUpgradeWithoutAChecksumDecodesToANullOneAndAFutureFieldIsIgnored() {
+    Map<String, Object> map = new LinkedHashMap<>();
+    map.put("type", "upgrade");
+    map.put("version", "2");
+    map.put("binaryUrl", "https://r/x");
+    map.put("signature", "a field a later host may add");
+    assertEquals(new Upgrade("2", "https://r/x", null), CiRunnerCodec.decode(map));
+  }
+
+  /**
+   * What a runner released before these frames existed does with one: its codec has no arm for the
+   * type, so it throws the typed UNKNOWN_TYPE — which that runner's ControlSocket catches, logs and
+   * drops, staying connected (RunnerMainTest pins that half). Shown here with a type this codec does
+   * not know, which is exactly the position an older codec is in with "upgrade".
+   */
+  @Test
+  void aFrameAnOlderCodecDoesNotKnowIsTheTypedUnknownTypeItsReceiverDrops() {
+    CiRunnerDecodeException e =
+        assertThrows(
+            CiRunnerDecodeException.class,
+            () ->
+                CiRunnerCodec.decode(
+                    Map.of("type", "upgradeV2", "version", "2", "binaryUrl", "https://r/x")));
+    assertEquals(CiRunnerDecodeException.Reason.UNKNOWN_TYPE, e.reason());
   }
 
   @Test

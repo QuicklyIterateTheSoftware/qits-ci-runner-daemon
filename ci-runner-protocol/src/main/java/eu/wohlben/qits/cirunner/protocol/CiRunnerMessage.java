@@ -19,4 +19,6 @@ public sealed interface CiRunnerMessage
         Launch,
         Reap,
         Cancel,
-        Released {}
+        Released,
+        Upgrade,
+        Retire {}

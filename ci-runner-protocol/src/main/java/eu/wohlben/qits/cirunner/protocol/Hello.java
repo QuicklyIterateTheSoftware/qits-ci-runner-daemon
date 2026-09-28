@@ -13,6 +13,10 @@ package eu.wohlben.qits.cirunner.protocol;
  * <p><b>Identity is not in it.</b> The connection was authenticated by the bearer on the upgrade,
  * minted from the client this runner registered — the host knows which runner this is before it
  * reads a frame, and a runner id here would only be a claim to check against that.
+ *
+ * <p><b>{@code runnerVersion} is FROZEN</b> — the field name {@code "runnerVersion"}, a string, the
+ * binary's {@link CiRunnerBinary#VERSION}. It is what qits-ci compares with its pin to decide on
+ * {@link Upgrade}, so a runner of any age must keep being recognisable by it; see {@link Upgrade}.
  */
 public record Hello(
     String runnerVersion, int capabilityVersion, int slots, Capabilities capabilities)

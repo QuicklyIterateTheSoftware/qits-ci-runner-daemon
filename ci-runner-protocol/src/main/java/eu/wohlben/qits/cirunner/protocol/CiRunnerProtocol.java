@@ -19,6 +19,7 @@ package eu.wohlben.qits.cirunner.protocol;
  *   Reap → Reaped                            (per step)
  *   Cancel                                   (reap the whole run now)
  *   Released                                 (the run is closed; its slot is free)
+ *   Upgrade → (drain) … Retire              (self-update; see Upgrade)
  * </pre>
  *
  * with {@link Heartbeat} underneath from connect to close.
@@ -33,6 +34,11 @@ public final class CiRunnerProtocol {
    * {@link Ack}. Bumped when the wire contract changes in a way either side must branch on. A
    * runner that reads an {@link Ack} carrying a version it does not know exits nonzero rather than
    * guessing; its unit restarts it and the journal says why.
+   *
+   * <p><b>Deliberately still 1 after {@link Upgrade} and {@link Retire} arrived.</b> An older runner
+   * drops a frame of a type it does not know and carries on, which is all an unknown {@code Upgrade}
+   * needs to be; a bump, on the other hand, would make every runner already installed exit on its
+   * next {@code Ack} — exactly the runners self-update exists to reach.
    */
   public static final int CAPABILITY_VERSION = 1;
 
@@ -56,6 +62,9 @@ public final class CiRunnerProtocol {
     public static final String REAP = "reap";
     public static final String CANCEL = "cancel";
     public static final String RELEASED = "released";
+    // qits-ci -> runner, self-update. FROZEN: see Upgrade and Retire.
+    public static final String UPGRADE = "upgrade";
+    public static final String RETIRE = "retire";
 
     private Type() {}
   }
@@ -77,6 +86,12 @@ public final class CiRunnerProtocol {
     public static final String CONTAINER_NAME = "containerName";
     public static final String DETAIL = "detail";
     public static final String WORKLOAD_SPEC = "workloadSpec";
+
+    // Upgrade and Retire. FROZEN, with RUNNER_VERSION above: see Upgrade.
+    public static final String VERSION = "version";
+    public static final String BINARY_URL = "binaryUrl";
+    public static final String SHA256 = "sha256";
+    public static final String REASON = "reason";
 
     // Capabilities
     public static final String DOCKER = "docker";
