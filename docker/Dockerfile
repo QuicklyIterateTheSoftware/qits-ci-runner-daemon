@@ -1,9 +1,13 @@
-# HOW THE BINARY IS BUILT — qits-ci-daemon's docker/Dockerfile, with this repository's names.
+# HOW THE RUNNER IS BUILT — qits-ci-daemon's docker/Dockerfile for the native compile, with this
+# repository's names, and one stage more: the image.
 #
-# This repository ships no image. The artifact is `ci-runner/target/qits-ci-runner`, a fully static
-# musl binary that qits-artifacts serves as bytes and the install script qits-ci renders downloads to
-# /usr/local/bin on a runner host. So the last stage is a `FROM scratch` holding that one file, and
-# what a build "produces" is an `--output type=local` of it.
+# THE ARTIFACT IS AN IMAGE. A runner is the static `qits-ci-runner` binary running inside a container
+# on its host, under docker's restart policy, with the host's docker socket bind-mounted — the
+# install script qits-ci renders `docker run`s it, and a runner rolls itself over to a new version by
+# starting a successor container from the next tag of the same image. So the last stage, and the
+# default target, is `image`: the binary and a docker CLI on a small alpine base, pushed as
+# `<registry>/qits/qits-ci-runner:<version>`. The `binary` target still exports the bare file for a
+# developer who wants it; nothing publishes it.
 #
 # The toolchain image is `docker/Dockerfile.musl-builder`, built first and named here by
 # BUILDER_IMAGE; its LAST stage must stay the toolchain (qits-bootstrap-cli builds qits-ci-daemon's
@@ -12,7 +16,9 @@
 # A developer's build is two lines and needs no platform:
 #
 #     docker build -t qits/graalvmce-musl-builder:jdk-25 -f docker/Dockerfile.musl-builder docker/
-#     docker build --target binary --output type=local,dest=out -f docker/Dockerfile .
+#     docker build -t qits-ci-runner:dev -f docker/Dockerfile .
+#
+# (`--target binary --output type=local,dest=out` instead of `-t` for the file alone.)
 #
 ARG BUILDER_IMAGE=qits/graalvmce-musl-builder:jdk-25
 
@@ -54,14 +60,37 @@ RUN ./mvnw -B -ntp -s .qits-maven-settings.xml -pl ci-runner -am package -Dnativ
 
 # --- sbom -----------------------------------------------------------------------------------------
 # The ci-runner module's CycloneDX document, reached with `--opt target=sbom --output type=local`.
-# BEFORE the `binary` stage on purpose: the last stage is what a plain build produces, and that must
+# BEFORE the `image` stage on purpose: the last stage is what a plain build produces, and that must
 # stay the artifact.
 FROM scratch AS sbom
 COPY --from=build /qits-build/ci-runner/target/sbom.json /sbom.json
 
 # --- binary ---------------------------------------------------------------------------------------
-# THE ARTIFACT, AND THE DEFAULT TARGET: `--output type=local,dest=out` writes `out/qits-ci-runner`.
-# The export directory is not the checkout's concern — `.dockerignore` excludes `out/` so a second
+# The bare file, for a developer: `--opt target=binary --output type=local,dest=out` writes
+# `out/qits-ci-runner`. Not released — the image below is. `.dockerignore` excludes `out/` so a second
 # export against the same context stays a cache hit.
 FROM scratch AS binary
 COPY --from=build /qits-build/ci-runner/target/qits-ci-runner /qits-ci-runner
+
+# --- image ----------------------------------------------------------------------------------------
+# THE ARTIFACT, AND THE DEFAULT TARGET: `<registry>/qits/qits-ci-runner:<version>`.
+#
+# The base is the official docker CLI image because the runner shells `docker` for every container it
+# starts, removes and inspects — its own successor included — against the host's daemon through the
+# bind-mounted socket; it needs the CLI and nothing else. Pinned to a full version, not `cli`: a
+# runner image is a release, and the CLI in it should not move between two builds of one tag. A bare
+# Docker Hub name on purpose, as ci-base's `FROM docker:cli` is — the platform's builder rewrites
+# docker.io to its mirror, and a developer's build pulls from Hub directly. The static binary needs no
+# libc from the base at all; alpine is simply what the CLI image ships on.
+#
+# ENTRYPOINT replaces the base's `docker-entrypoint.sh`, and the empty CMD drops its `sh`, which
+# would otherwise arrive as the runner's first argument. It runs as root: the socket it is handed is
+# root-equivalent whoever holds it, and a user inside the image would only need the socket's group
+# id, which differs per host. The state directory is where the install script mounts the runner's
+# state volume; creating it here makes a mount-less `docker run` of the image fail on registration
+# rather than on a missing directory.
+FROM docker:29.8.1-cli AS image
+COPY --from=build /qits-build/ci-runner/target/qits-ci-runner /usr/local/bin/qits-ci-runner
+RUN mkdir -p /var/lib/qits-ci-runner && chmod 700 /var/lib/qits-ci-runner
+ENTRYPOINT ["/usr/local/bin/qits-ci-runner"]
+CMD []

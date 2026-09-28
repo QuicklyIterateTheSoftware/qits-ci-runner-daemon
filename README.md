@@ -1,6 +1,6 @@
 # qits-ci-runner-daemon
 
-The **qits CI runner**: a process you install on any Linux machine with docker so that machine runs
+The **qits CI runner**: a container you start on any Linux machine with docker so that machine runs
 CI steps for the platform. It registers once, holds one outbound connection to qits-ci, reserves
 runs when it has a free slot, and starts and removes each step's container with the host's docker.
 qits-ci still drives every run — it decides the steps, reads their output and records the verdict;
@@ -8,19 +8,24 @@ the runner only starts the containers it is told to start and removes the ones i
 
     ./mvnw verify                           # a clone of this repo alone builds and tests green
     sh scripts/test-install-contract.sh     # the install script's contract, offline
+    docker build -t qits-ci-runner:dev -f docker/Dockerfile .   # the image (after the toolchain; see docker/Dockerfile)
 
 ## Installing a runner (for the person at the machine)
 
+A runner is **one docker container** on your machine: the static `qits-ci-runner` binary in the image
+`registry.qits.<domain>/qits/qits-ci-runner:<version>`, started with docker's own restart policy
+(`unless-stopped`) as its only supervisor and the host's docker socket mounted so it can start CI
+steps. There is no service to install, no binary on the host and no systemd unit.
+
 ### What you need
 
-- **Linux on x86-64**, with **systemd**.
-- **Docker**, installed and running (`docker info` answers).
+- **Linux on x86-64** with **Docker** installed and running (`docker version` answers).
 - **Outbound HTTPS** to the platform's domain (the CI service, its identity provider and its
-  artifact store). **No inbound port** is ever opened: the runner only dials out, so a VM behind a
-  home router or a NAT works as it is.
-- **sudo** (or a root shell) for the install.
+  registry). **No inbound port** is ever opened: the runner only dials out, so a VM behind a home
+  router or a NAT works as it is.
+- **root**, or a user in the `docker` group — the install line uses `sudo`.
 
-### The one action
+### Install
 
 1. In the CI UI, open **Runners**, create a runner (or pick an existing one) and open its install
    panel.
@@ -29,80 +34,148 @@ the runner only starts the containers it is told to start and removes the ones i
        curl -fsSL -H 'Authorization: Bearer qits_tok_…' https://ci.qits.<domain>/ci/api/runners/install.sh | sudo env QITS_CI_RUNNER_URL='https://ci.qits.<domain>' QITS_CI_RUNNER_ID='<id>' QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_…' QITS_CI_RUNNER_SLOTS='<n>' sh
 
 That is the whole install, and everything in it goes through the platform's **public edge** — the
-same `https://…qits.<domain>` names a browser uses; nothing on the machine needs the platform's
-internal network or DNS. `curl` fetches the generic install script with the runner's one-time
-registration token, and `sudo … sh` runs it as root with this runner's four values in its
+same `https://…qits.<domain>` names a browser uses. `curl` fetches the generic install script with the
+runner's one-time registration token, and `sudo … sh` runs it with this runner's four values in its
 environment. The script carries no secret of its own and names no runner; the token is in the line
-twice (the fetch's bearer and the script's value) and treat the line as a secret until the runner has
-registered. Because the script runs in a `sh` of its own, a refusal ends that process and never the
-shell you pasted into. (Already root, on a host with no `sudo`? Delete the word `sudo` from the line;
-`env … sh` does the rest.)
+twice, so treat the line as a secret until the runner has registered. Because the script runs in a
+`sh` of its own, a refusal ends that process and never the shell you pasted into. (A user in the
+`docker` group can delete the word `sudo`; `env … sh` does the rest.)
 
-The script refuses, one sentence each, when a value is missing, when it is not root, or when
-`docker` is not on `PATH`. Otherwise it downloads the `qits-ci-runner` binary from the platform's
-artifact store (`https://registry.qits.<domain>/artifacts/daemons/qits-ci-runner/<version>`, with the
-same token) to `/usr/local/bin/qits-ci-runner`, creates the system user `qits-ci-runner` in the
-`docker` group, writes `/etc/qits-ci-runner.env` (mode 0600 — it holds the registration token),
-writes the `qits-ci-runner` systemd unit, starts it, and prints
+The script refuses, one sentence each, when a value is missing or `docker version` does not answer.
+Otherwise it:
 
-    qits-ci-runner installed; watch: journalctl -fu qits-ci-runner
+1. logs in to `registry.qits.<domain>` as `token` with the registration token — in a throwaway
+   `docker --config` directory, deleted right after, so your own `~/.docker/config.json` is never
+   touched — and pulls the runner image it was rendered with;
+2. removes every container already labelled `qits.ci.runner.process=<id>` (an earlier install of this
+   runner);
+3. keeps the state volume `qits-ci-runner-state-<first 8 of id>` but deletes `client.json` from it, so
+   the token in the line is the one that registers;
+4. starts the runner:
 
-and never the token.
+       docker run -d --name qits-ci-runner-<id8>-<version> --restart unless-stopped \
+         --label qits.ci.runner.process=<id> --label qits.ci.runner.version=<version> \
+         -v /var/run/docker.sock:/var/run/docker.sock \
+         -v qits-ci-runner-state-<id8>:/var/lib/qits-ci-runner \
+         -e QITS_CI_RUNNER_URL=… -e QITS_CI_RUNNER_ID=… -e QITS_CI_RUNNER_SLOTS=… \
+         -e QITS_CI_RUNNER_REGISTRATION_TOKEN \
+         registry.qits.<domain>/qits/qits-ci-runner:<version>
+
+   (no `--network`: docker's default bridge), and prints
+
+       qits-ci-runner started; watch: docker logs -f qits-ci-runner-<id8>-<version>
+
+and never the token: the login reads it on stdin, and the `run` passes it as `-e
+QITS_CI_RUNNER_REGISTRATION_TOKEN`, which docker fills from its own environment — it is in no command
+line.
 
 ### What a good first start looks like
 
-    journalctl -u qits-ci-runner -f
+    docker logs -f qits-ci-runner-<id8>-<version>
 
 shows, within a few seconds:
 
+    ci-runner <version> is running in container <id>
     ci-runner registered as <runner id>
     ci-runner connected slots=2
 
 `registered` appears once, on the very first start: the runner exchanged its registration token for
-its own credentials and stored them in `/var/lib/qits-ci-runner/client.json` (mode 0600). The token is
+its own credentials and stored them in `client.json` on its state volume (mode 0600). The token is
 never used again. From then on the runner mints its access token at the idp's public token endpoint
 (`https://idp.qits.<domain>/idp/token`, `client_credentials` with its id and secret in the form body
 — the edge would take an HTTP Basic header for its own) and dials `wss://ci.qits.<domain>/ci/runners/socket`;
-both addresses come from the registration answer. `connected slots=2` appears on every connection, with the number of runs the CI
-lets this runner hold at once — the CI's setting for the runner wins over the `QITS_CI_RUNNER_SLOTS`
-the machine advertises. After that you will see `took run …`, `launched run … step …` and `released
-run …` as work arrives.
+both addresses come from the registration answer. `connected slots=2` appears on every connection,
+with the number of runs the CI lets this runner hold at once — the CI's setting for the runner wins
+over the `QITS_CI_RUNNER_SLOTS` the machine advertises. After that you will see `took run …`,
+`launched run … step …` and `released run …` as work arrives.
 
-### Rotating the registration
+### Updating
+
+Nothing to do: a runner updates itself. The CI pins the runner version it hands out, and a runner
+that connects with any other version is told to become it. `docker logs` of the old container then
+shows
+
+    ci-runner upgrade to <new> requested; draining <n> held run(s)
+    ci-runner pulled registry.qits.<domain>/qits/qits-ci-runner:<new>
+    ci-runner released run …                      (for each run it still held)
+    ci-runner started its successor qits-ci-runner-<id8>-<new> on …; waiting up to 180s for it to take over
+    ci-runner retired by the host (…); qits-ci-runner-<id8>-<new> has taken over
+    ci-runner exits: retired
+
+In order:
+
+1. **Drain.** The old runner takes no new run from the moment it is told; the runs it holds finish.
+2. **Pull.** It pulls the new image under its own access token as the registry login (a throwaway
+   `docker --config` again) and checks the image digest when the CI sent one.
+3. **Start the successor** once it holds no run: a new container, `qits-ci-runner-<id8>-<new>`, with
+   the old one's parameters read from `docker inspect` of itself — its environment (minus the spent
+   registration token), mounts, restart policy and network — and the new image and version label.
+   The successor uses the same state volume, so it is already registered.
+4. **Hand over.** The successor connects; the CI gives it the slots and tells the old one to retire.
+   The old one takes its own restart policy away (`docker update --restart=no`) and exits 0.
+5. **Clean up.** After its first connection the new runner removes its predecessors — every container
+   of this runner with another version label — waiting up to a minute for one still running to exit.
+   `docker ps -a` then shows one runner container.
+
+**Rollback is automatic.** If the successor has not taken over within
+`QITS_CI_RUNNER_ROLLOVER_TIMEOUT` (180 s) — it crashes, cannot pull, cannot connect — the old runner
+removes it (`docker rm -f`) and carries on, still draining, and tries again later (backing off to
+once every ten minutes). A failed pull or start is retried the same way. While it drains the old
+runner holds no slots, so a runner that cannot update takes no work until it can; its log says why.
+
+**Runners older than self-update** (installed with the systemd unit and a bare binary) cannot update
+themselves: they drop the CI's update frame and keep running the old version — connected, but
+given no slots, so they take no work. Re-paste the install
+line once — replace the registration token in the CI UI to get a fresh one — and remove the old unit
+first:
+
+    sudo systemctl disable --now qits-ci-runner
+    sudo rm /etc/systemd/system/qits-ci-runner.service /usr/local/bin/qits-ci-runner /etc/qits-ci-runner.env
+    sudo systemctl daemon-reload
+
+(`/var/lib/qits-ci-runner` on the host and the `qits-ci-runner` system user are no longer used and
+can go too; the old runner's `qits-ci-runner-buildkitd` builder is adopted by the new one as it is.) From then on the runner is a
+container and updates itself.
+
+### Rotating the registration, or replacing a runner
 
 In the CI UI, **Replace registration token** on the runner, then paste the **new line** into a shell
-exactly as the first time. The script downloads the pinned binary again, replacing whatever was
-already installed, rewrites `/etc/qits-ci-runner.env` with the new token, and restarts the unit; the
-runner sees a token it has not registered with and registers again, replacing its stored credentials.
-The old line stops working: its token is deleted when the new one is minted.
+exactly as the first time. The script removes the running container, keeps the state volume, deletes
+the stored client and starts the runner again with the new token, which registers and replaces the
+client. The old line stops working: its token is deleted when the new one is minted. The same paste is
+how you reinstall a runner whose container you removed by hand.
 
 ### Removing a runner
 
-    sudo systemctl disable --now qits-ci-runner
+    docker rm -f $(docker ps -aq --filter label=qits.ci.runner.process=<id>)
 
 then **delete the runner in the CI UI**, which decommissions its credentials so the stored client can
-never connect again. To clean the machine as well, remove `/usr/local/bin/qits-ci-runner`,
-`/etc/qits-ci-runner.env`, `/etc/systemd/system/qits-ci-runner.service` and
-`/var/lib/qits-ci-runner`, and `docker rm -f qits-ci-runner-buildkitd` if the runner ever built images.
+never connect again. To clean the machine as well:
+
+    docker volume rm qits-ci-runner-state-<id8>
+    docker rm -f qits-ci-runner-buildkitd            # if the runner ever built images
+    docker rm -f $(docker ps -aq --filter label=qits.ci.runner=<id>)   # step containers, if any are left
 
 ### Environment
 
-The install script writes the first five into `/etc/qits-ci-runner.env` (four from the install
-line, and the state directory). The rest are for an operator
-with a reason.
+The install script passes the first four to the container; the rest are for an operator with a
+reason, and the install script passes each one that is set in its environment (put it in the line's
+`env …`). A successor inherits whatever its predecessor was given.
 
 | Variable | Meaning | Default |
 |---|---|---|
 | `QITS_CI_RUNNER_URL` | The CI service's base url — its public edge name, e.g. `https://ci.qits.example.eu`. | required |
 | `QITS_CI_RUNNER_ID` | The runner id the CI minted for this runner. | required |
-| `QITS_CI_RUNNER_REGISTRATION_TOKEN` | One-time registration token. Needed only until registered; a *different* token later means "register again". | required until registered |
-| `QITS_CI_RUNNER_STATE_DIR` | Where `client.json` lives. | `/var/lib/qits-ci-runner` |
+| `QITS_CI_RUNNER_REGISTRATION_TOKEN` | One-time registration token. Needed only until registered; a *different* token later means "register again". A successor is never given it. | required until registered |
 | `QITS_CI_RUNNER_SLOTS` | How many runs this machine is set up for. Advertised; the CI's number is the cap. | `1` |
-| `QITS_CI_RUNNER_DOCKER_BINARY` | The docker CLI to run. | `docker` |
+| `QITS_CI_RUNNER_STATE_DIR` | Where `client.json` lives — the state volume's mount point. | `/var/lib/qits-ci-runner` |
+| `QITS_CI_RUNNER_DOCKER_BINARY` | The docker CLI to run. | `docker` (the image's) |
 | `QITS_CI_RUNNER_DOCKER_TIMEOUT` | Seconds any one docker call may take before it is killed. | `120` |
 | `QITS_CI_RUNNER_BUILDKIT_IMAGE` | The image of the runner's own buildkitd. | `moby/buildkit:v0.33.0` |
 | `QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES` | Comma list of `host[:port]` the builder speaks plain HTTP to. | empty |
 | `QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS` | Comma list of `from=to` registry rewrites; `to` may carry a path (`mirror:8080/hub`). | empty |
+| `QITS_CI_RUNNER_ROLLOVER_TIMEOUT` | Seconds a successor has to take over before it is removed and the update retried. | `180` |
+| `QITS_CI_RUNNER_PRINT_VERSION` | `1`: print the runner version and exit 0, needing nothing else. For the image's smoke test. | unset |
 
 Both builder lists stay empty on a machine that reaches the platform through its public domain —
 every registry there is HTTPS. A runner on the platform host's own network (`qits-net`) needs the
@@ -117,32 +190,35 @@ Changing either replaces the builder on its next use (its cache volume survives)
 
 ### Exit codes
 
-A healthy runner never exits; systemd restarts it after any of these (`RestartSec=5`).
+A healthy runner never exits; docker restarts it after any of these. The one clean exit, 0, is a
+runner retired by the CI (after an update, or a decommission), which takes its own restart policy away
+first.
 
 | Code | Meaning | What to do |
 |---|---|---|
-| 2 | A variable is missing or unparseable (the journal line names it), or the runner is not registered and has no token. | Fix `/etc/qits-ci-runner.env`. |
+| 0 | Retired by the CI. | Nothing — its successor, if any, is running. |
+| 2 | A variable is missing or unparseable (the log line names it), or the runner is not registered and has no token. | Re-paste the install line. |
 | 3 | Registration could not reach the CI, or it answered 5xx. | Nothing — the restart is the retry. |
-| 4 | The CI speaks a protocol version this binary does not. | Install the binary the CI's current install script names. |
-| 5 | The CI refused the registration (4xx); its answer is quoted in the journal. | Replace the registration token in the UI and paste the new line. |
-| 6 | The state directory is unreadable, or `client.json` is not a usable client. | Delete `client.json` and start again with a fresh registration token. |
+| 4 | The CI speaks a protocol version this runner does not. | Re-paste the install line the CI currently hands out. |
+| 5 | The CI refused the registration (4xx); its answer is quoted in the log. | Replace the registration token in the UI and paste the new line. |
+| 6 | The state directory is unreadable, or `client.json` is not a usable client. | Replace the registration token in the UI and paste the new line (it resets `client.json`). |
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `ci-runner-protocol/` | The runner control-socket wire contract: message records and a codec over a plain `Map`, plus `CiRunnerBinary` naming the binary version released beside it. Depends on nothing. Published as `eu.wohlben.qits:qits-ci-runner-protocol`; qits-ci-service depends on it. |
+| `ci-runner-protocol/` | The runner control-socket wire contract: message records and a codec over a plain `Map`, plus `CiRunnerBinary` naming the runner version (the image tag) released beside it. Depends on nothing. Published as `eu.wohlben.qits:qits-ci-runner-protocol`; qits-ci-service depends on it. |
 | `ci-runner/` | The binary. A Quarkus command-mode app — no web stack, it dials out and never listens — compiled to a fully static musl native image, `qits-ci-runner`. |
-| `docker/` | `Dockerfile` (the native build, exported as a file) and `Dockerfile.musl-builder` (the toolchain; a copy of qits-ci-daemon's). |
-| `packaging/qits-ci-runner.service` | The systemd unit. The install script embeds it verbatim. |
-| `scripts/test-install-contract.sh` | Runs the install script offline against stubs and asserts its contract. |
-| `scripts/fixtures/runner-install.sh` | A rendering of qits-ci-service's install-script template (copied from `service/target/runner-install.fixture.sh`, which `RunnerInstallScriptTest` writes). |
+| `docker/` | `Dockerfile` (the native build; its default target `image` is the runner image, `binary` exports the bare file) and `Dockerfile.musl-builder` (the toolchain; a copy of qits-ci-daemon's). |
+| `scripts/test-install-contract.sh` | Runs the install script offline against a stub docker and asserts its contract. |
+| `scripts/fixtures/runner-install.sh` | The reference implementation of the install contract. qits-ci-service's template (`service/src/main/resources/runner-install.sh.tmpl`) is written to match it exactly. |
 
 Inside `ci-runner/`, `Main` is the only CDI bean. It resolves configuration and news up plain classes:
 `RunnerMain` (the flow), `Registration` and `Bearer` (identity), `ControlSocket` (the connection),
 `Reservations` (slot arithmetic), `Launcher`/`RunnerArgv` (spec → `docker run`), `Reaper`,
-`BootSweep` and `BuildPlane` (the runner's own buildkitd). Every docker call goes through `Docker`,
-under a deadline.
+`BootSweep` and `BuildPlane` (the runner's own buildkitd), and `Rollover` with `SelfContainer` and
+`SelfSpec` (self-update: which container this is, what it was started with, and its successor). Every
+docker call goes through `Docker`, under a deadline.
 
 ## The conversation
 
@@ -153,7 +229,18 @@ under a deadline.
     Reap{run, step, containerName} → Reaped
     Cancel{run}                              remove every container of the run now
     Released{run}                            the run is closed; its slot is free
+    Upgrade{version, image, sha256?}         become this version: drain, pull, start a successor
+    Retire{reason}                           a runner of the pinned version took over; exit 0
     Heartbeat                                every 10 s
+
+**`Upgrade` and `Retire` are frozen**, with `Hello.runnerVersion`: they are how a runner of any older
+version is told to update, so their wire shape never changes (see `Upgrade`'s javadoc). A runner too
+old to know them drops them as frames of an unknown type and stays connected — the host keeps it
+draining, and a person re-pastes the install line (see "Updating").
+
+**A runner's own container is labelled `qits.ci.runner.process=<id>`**, and its version
+`qits.ci.runner.version=<version>` — never `qits.ci.runner=<id>`, the step label the sweep below
+removes, which a spec can never set either.
 
 **`Released` is the only thing that frees a slot.** qits-ci drives the run, and a red step skips the
 rest, so the runner cannot tell "the last step was reaped" from "the next step is not launched yet";
@@ -214,14 +301,16 @@ bundle able to validate it: the pinned image's `Dockerfile` builds its default (
 from `alpine:3.23`, whose base layer ships `/etc/ssl/certs/ca-certificates.crt` — Alpine's
 `ca-certificates-bundle` — without needing an explicit `apk add`; only the image's Ubuntu-export
 variant, which this runner does not use, installs the package by hand. On top of that, the builder
-mounts the *host's* CA bundle read-only over the same path when it can find one — probing
+would mount the *host's* CA bundle read-only over the same path when it can find one — probing
 `/etc/ssl/certs/ca-certificates.crt`, then `/etc/pki/tls/certs/ca-bundle.crt`, then
-`/etc/ssl/cert.pem` on the runner's own machine — so a host that trusts something the image's bundle
-does not (an operator's own root, say) has the builder trust it too; finding none is logged once and
-is not a failure, since the image's bundle already covers the platform's own chain. **A self-signed
-edge is out of scope**: nothing here adds a one-off certificate to the trust store, so a platform
-whose edge is not behind a publicly-issued certificate needs its own root laid down on the runner
-host at one of the three paths above before a build against it will trust the connection.
+`/etc/ssl/cert.pem` — **but only a runner that is not itself in a container probes**. The runner
+container cannot see the host's filesystem: the probe would find the runner image's own bundle,
+and the bind it produced would be resolved by the host's docker on the host, where a RHEL-style host
+has no file at the Debian path and docker would mount an empty directory over the builder's
+certificates. So a containerised runner — every installed one — mounts nothing, logs that once, and
+the builder trusts the image's bundle, which covers the platform's publicly-issued chain. **An
+operator's own root, or a self-signed edge, is out of scope**: nothing here adds a certificate to the
+builder's trust store.
 
 On the **INTERNAL plane** — a runner sharing the platform host's `qits-net` — both
 `QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES` and `QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS` are set (see
@@ -233,38 +322,36 @@ rewrite an in-network spelling nothing on that plane resolves.
 ## The install-script contract
 
 qits-ci-service renders the generic install script from
-`service/src/main/resources/runner-install.sh.tmpl` — filling in only its public artifacts base and the
-pinned runner version — and serves it at `GET /ci/api/runners/install.sh`, readable with a
-registration token. `scripts/fixtures/runner-install.sh` is one such rendering (qits-ci's
-`RunnerInstallScriptTest` writes it to `service/target/runner-install.fixture.sh`), and
-`scripts/test-install-contract.sh` runs it offline the way the install line does — on stdin, with
-the four values in its environment. The template must honour:
+`service/src/main/resources/runner-install.sh.tmpl` — filling in only the pinned image (its
+registry's public host, `CiRunnerBinary.IMAGE_REPOSITORY`, `CiRunnerBinary.VERSION`) and the version
+— and serves it at `GET /ci/api/runners/install.sh`, readable with a registration token.
+`scripts/fixtures/runner-install.sh` is the **reference implementation**: the template is written to
+match it exactly, and `scripts/test-install-contract.sh` runs it offline the way the install line
+does — on stdin, with the four values in its environment and a stub `docker` on `PATH` recording its
+argv. The contract (the test's header spells each assertion):
 
 0. It carries no token and names no runner: `QITS_CI_RUNNER_URL`, `QITS_CI_RUNNER_ID`,
    `QITS_CI_RUNNER_REGISTRATION_TOKEN` and `QITS_CI_RUNNER_SLOTS` come from its environment, and one
-   missing is a refusal naming it, before anything is written.
-1. Every absolute path the script writes is prefixed with `${QITS_INSTALL_ROOT:-}`: the binary at
-   `$ROOT/usr/local/bin/qits-ci-runner`, the env file at `$ROOT/etc/qits-ci-runner.env`, the unit at
-   `$ROOT/etc/systemd/system/qits-ci-runner.service`.
-2. It takes `docker`, `id`, `useradd`, `systemctl` and `curl` from `PATH`, never by absolute path.
-   The root check is `id -u` answering `0`.
-3. The binary lands executable at `$ROOT/usr/local/bin/qits-ci-runner`, downloaded with `curl`; a
-   rotation — an executable already there — downloads it again and replaces it with the pinned
-   version.
-4. `$ROOT/etc/qits-ci-runner.env` is mode 0600 and carries exactly `QITS_CI_RUNNER_URL`,
-   `QITS_CI_RUNNER_ID`, `QITS_CI_RUNNER_REGISTRATION_TOKEN`, `QITS_CI_RUNNER_STATE_DIR` and
-   `QITS_CI_RUNNER_SLOTS`, one `KEY=value` per line; a rotation rewrites it with the new token.
-5. The unit written is byte-identical to `packaging/qits-ci-runner.service`.
-6. `systemctl` is called with `daemon-reload`, `enable --now qits-ci-runner` and
-   `restart qits-ci-runner`.
-7. The registration token appears in no line the script prints, on stdout or stderr.
-
-The script does not touch the state directory: re-registration on rotation is the binary's.
+   missing is a refusal naming it, before docker is asked anything.
+1. `docker version` must answer, or it refuses and runs nothing else.
+2. `docker --config <tmp> login <registry host> -u token --password-stdin` with the registration token
+   on stdin, `docker --config <tmp> pull <image>`, and the directory deleted. A failed login or pull
+   is a refusal that leaves an installed runner alone.
+3. `docker rm -f` every container `docker ps -aq --filter label=qits.ci.runner.process=<id>` lists.
+4. The state volume `qits-ci-runner-state-<id8>` is kept; `client.json` is removed from it.
+5. `docker run -d` exactly as in "Install" above, plus `-e NAME=value` for each tuning variable that
+   is set. A successor (`RunnerArgv.runSuccessor`) produces the same shape from `docker inspect`.
+6. It prints `qits-ci-runner started; watch: docker logs -f <name>`.
+7. The registration token appears in no line it prints and in no docker argv.
 
 ## Releasing
 
-`.config/qits/release.yml` rides the `daemon` archetype: the binary `qits-ci-runner` and the jar
-`eu.wohlben.qits:qits-ci-runner-protocol` leave together, the jar after the binary so a pin never
-names bytes that are not in the store yet. The jar's version is the binary's (`CiRunnerBinary`), so
-qits-ci pins the runner it hands out by pinning the jar in its pom. Nothing released here reaches a
-runner host by itself: a host runs what its install script downloaded.
+`.config/qits/release.yml` publishes two artifacts: the image `qits/qits-ci-runner`
+(`<registry>/qits/qits-ci-runner:<version>`, built from `docker/Dockerfile`'s `image` target) and
+the jar `eu.wohlben.qits:qits-ci-runner-protocol`, the jar after the image so a pin never names an
+image that is not in the registry yet. It declares both slots itself and names `java-service` for the
+family, as qits-workspace-daemon does for the same image-plus-jar shape. The jar's version is the
+image's tag (`CiRunnerBinary`), so qits-ci pins the runner it hands out — in the install script and
+in every `Upgrade` — by pinning the jar in its pom. The release request builds the image, loads it
+into the step's docker, and asserts it prints the tree's version (`QITS_CI_RUNNER_PRINT_VERSION=1`)
+and refuses to start with no environment (exit 2). No bare binary is published.

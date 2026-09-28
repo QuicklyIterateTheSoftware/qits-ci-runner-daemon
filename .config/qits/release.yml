@@ -1,11 +1,18 @@
-archetype: daemon
+archetype: java-service
 artifacts:
-  - { type: daemon, name: qits-ci-runner, sbom: out/sbom.json }
+  # THE RUNNER IS AN IMAGE, and only an image: on every host it runs as a container started from
+  # this tag (the install script qits-ci renders `docker run`s it; a runner rolls itself over by
+  # starting a successor from the next tag). The static native binary is still built — it is what
+  # the image carries — but it is no artifact of its own, and nothing downloads it.
+  #
+  # The document is the ci-runner module's CycloneDX, from the same build as the image: the reactor
+  # resolve that produced the binary inside it.
+  - { type: docker, name: qits/qits-ci-runner, sbom: out/sbom.json }
   # THE PIN AND THE PROTOCOL, IN ONE JAR — qits-ci-daemon's arrangement, for the same reason.
   # `ci-runner-protocol` is the wire contract qits-ci and the runner both speak, and it carries
   # `CiRunnerBinary.VERSION`, filtered from `${project.version}` at build time, so the jar's version
-  # IS the version of the binary published beside it. qits-ci pins this coordinate in its pom and
-  # renders the install script's download from the constant.
+  # IS the tag of the image published beside it. qits-ci pins this coordinate in its pom and renders
+  # the install script's image, and every Upgrade's, from the constant.
   #
   # AND IT CARRIES NO `sbom:`, WHICH IS NOT THE DOCUMENT GOING MISSING. The composed postlude runs
   # in ONE step — the last one that builds — and a step container shares nothing with the next: the
@@ -13,16 +20,23 @@ artifacts:
   # never seen. So the jar submits its own document from the container that produced it.
   - { type: maven, name: "eu.wohlben.qits:qits-ci-runner-protocol" }
 
+# AN IMAGE AND A JAR FROM ONE TREE, WHICH NO ARCHETYPE PUBLISHES — the shape of qits-workspace-daemon
+# and qits-projects-daemon, which name `java-service` for the family and declare both slots
+# themselves, as this file does. It used to ride `daemon`, whose recipe publishes one bare binary;
+# with the binary no longer an artifact that archetype describes nothing here, and qits-ci only
+# composes an archetype's slot where the repository declares none, so with both declared below the
+# name is the family and nothing more.
+#
 # THIS FILE CANNOT BOOTSTRAP ITSELF. The publish run is composed from `main` and the gate reads the
 # tag, so on a repository whose `main` has never carried a release.yml the first release has nothing
 # to compose from. A person lands this file on `main` by hand once; every later change to it rides a
 # release request like any other.
 #
-# THE QA HALF IS THIS REPOSITORY'S, as it is qits-ci-daemon's, and for three things a compile does
-# not do: the JVM suite; a smoke probe that really STARTS A CONTAINER on the built binary and asserts
-# it refuses to run with no environment (exit 2) — which needs a docker socket, hence `docker: true`
-# where the archetype's `build: true` gives a builder and no socket; and the install-script contract
-# test, which runs a copy of the script qits-ci renders against stubs and needs nothing but a shell.
+# THE QA HALF, for three things a compile does not do: the JVM suite; a smoke of the BUILT IMAGE —
+# loaded into the step's docker and run twice, once asked for its version (it must print the tree's)
+# and once with no environment at all (it must refuse, exit 2) — which needs a docker socket, hence
+# `docker: true`; and the install-script contract test, which runs this repository's reference
+# rendering of the script qits-ci serves against a stub docker and needs nothing but a shell.
 release-request:
   - image: qits/build-images/maven-base:latest
     timeout-seconds: 1800
@@ -55,39 +69,51 @@ release-request:
         --opt build-arg:MUSL_URL="$musl_url" \
         --opt build-arg:ZLIB_URL="$zlib_url" \
         --output "type=image,name=$builder,push=true"
-      # BYTE-IDENTICAL TO THE RELEASE SLOT'S EXPORT. Change one, change the other.
+      # BYTE-IDENTICAL TO THE RELEASE SLOT'S IMAGE BUILD but for the output. Change one, change the
+      # other. The image is exported as a docker archive and loaded into the step's own docker rather
+      # than pushed: nothing is published from a fold, and a QA tag in the registry would be one
+      # more coordinate for the GC to reason about.
+      qa_ref="qits-ci-runner:qa-${QITS_CI_SHA:-local}"
+      mkdir -p out
       buildctl build --frontend dockerfile.v0 \
         --local context=. --local dockerfile=docker \
-        --opt target=binary \
+        --opt target=image \
         --opt build-arg:BUILDER_IMAGE="$builder" \
         --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
-        --output type=local,dest=out
-      # The probe runs the binary with NO environment and asserts exit 2 — the one line an operator
-      # who forgot the env file gets. The suite cannot see an SmallRye startup failure; this can.
-      probe=$(docker create alpine:3 /qits-ci-runner)
-      docker cp out/qits-ci-runner "$probe:/qits-ci-runner"
-      docker start -a "$probe" || true
-      code=$(docker inspect -f '{{.State.ExitCode}}' "$probe")
-      docker rm "$probe" >/dev/null
-      [ "$code" = 2 ] || { echo "a runner started with no environment exited $code, expected 2" >&2; exit 1; }
-      echo "qits-ci-runner built: $(sha256sum out/qits-ci-runner | cut -d' ' -f1)"
+        --output "type=docker,name=$qa_ref,dest=out/qits-ci-runner.tar"
+      docker load -i out/qits-ci-runner.tar
+      # THE VERSION PROBE: the binary in the image names the version this tree carries — the one
+      # the jar beside it will pin, and the one a runner says in its Hello. Answered before Quarkus
+      # starts, so stdout is exactly that one line.
+      expected=$(sed -n 's:^    <version>\(.*\)</version>$:\1:p' pom.xml | head -1)
+      printed=$(docker run --rm -e QITS_CI_RUNNER_PRINT_VERSION=1 "$qa_ref")
+      [ -n "$expected" ] && [ "$printed" = "$expected" ] || {
+        echo "the image printed version '$printed', the tree carries '$expected'" >&2
+        docker rmi "$qa_ref" >/dev/null 2>&1 || true
+        exit 1
+      }
+      # THE NO-ENVIRONMENT PROBE: the one line an operator who ran the image bare gets, exit 2. The
+      # suite cannot see a SmallRye startup failure; this can.
+      code=0
+      docker run --rm "$qa_ref" >/dev/null 2>&1 || code=$?
+      docker rmi "$qa_ref" >/dev/null 2>&1 || true
+      [ "$code" = 2 ] || { echo "the runner image started with no environment exited $code, expected 2" >&2; exit 1; }
+      echo "qits-ci-runner image built: version $printed"
 
   # THE INSTALL-SCRIPT CONTRACT (qits-464). qits-ci renders the script a person pastes on a runner
-  # host from its own template; scripts/fixtures/runner-install.sh is a copy of that rendering, and
-  # this step runs it offline in a temp root with docker, id, useradd, systemctl and curl stubbed on
-  # PATH. It asserts what the unit file beside it (packaging/qits-ci-runner.service) and the binary's
-  # env contract need — see the script's header. Nothing here needs docker or a network.
+  # host from its own template; scripts/fixtures/runner-install.sh is the reference rendering that
+  # template matches, and this step runs it offline with a stub docker on PATH that records its argv.
+  # It asserts the container contract — see the script's header. Nothing here needs docker or a
+  # network.
   - image: qits/build-images/ci-base:latest
     timeout-seconds: 300
     script: |
       sh scripts/test-install-contract.sh
 
-# THE RELEASE HALF IS THIS REPOSITORY'S TOO: two artifacts of two kinds leave this tree, and `daemon`
-# publishes the binary and nothing else. The first step below IS the archetype's, apart from
-# spelling the one name it would have read back out of `artifacts:`; the second is the
-# pin-and-protocol jar, deliberately AFTER the binary publish — the jar is what tells qits-ci which
-# binary to hand out, so a jar that resolves before its binary is in the store is a pin pointing at
-# nothing.
+# THE RELEASE HALF: two artifacts of two kinds leave this tree. The first step pushes the image; the
+# second is the pin-and-protocol jar, deliberately AFTER the push — the jar is what tells qits-ci
+# which image to hand out, so a jar that resolves before its image is in the registry is a pin
+# pointing at nothing.
 release:
   - image: qits/build-images/ci-base:latest
     build: true
@@ -110,15 +136,19 @@ release:
         --opt build-arg:MUSL_URL="$musl_url" \
         --opt build-arg:ZLIB_URL="$zlib_url" \
         --output "type=image,name=$builder,push=true"
-      # THE QA PIPELINE'S BUILD, BYTE FOR BYTE.
+      # THE QA PIPELINE'S IMAGE BUILD, BYTE FOR BYTE but for the output: `push=true` IS THE PUBLISH.
+      # The image goes from the builder straight to the registry and never enters a local image
+      # store. $QITS_BUILD_REGISTRY is the registry as the BUILDER resolves it.
+      ref="$QITS_BUILD_REGISTRY/$QITS_IMAGE_REPOSITORY/qits-ci-runner:$QITS_VERSION"
+      echo "releasing $ref"
       buildctl build --frontend dockerfile.v0 \
         --local context=. --local dockerfile=docker \
-        --opt target=binary \
+        --opt target=image \
         --opt build-arg:BUILDER_IMAGE="$builder" \
         --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
-        --output type=local,dest=out
-      # THE DOCUMENT COMES OUT OF THE SAME BUILD AS THE BINARY — the reactor exists only in there.
-      # Build args byte-identical to the export above, so every layer is a cache hit.
+        --output "type=image,name=$ref,push=true"
+      # THE DOCUMENT COMES OUT OF THE SAME BUILD AS THE IMAGE — the reactor exists only in there.
+      # Build args byte-identical to the push above, so every layer is a cache hit.
       #
       # GENERATED, NEVER SUBMITTED — the postlude PUTs it for the artifact that declares it.
       buildctl build --frontend dockerfile.v0 \
@@ -127,11 +157,6 @@ release:
         --opt build-arg:BUILDER_IMAGE="$builder" \
         --opt build-arg:QITS_MAVEN_CENTRAL_URL="${QITS_MAVEN_PROXY_URL:-}" \
         --output type=local,dest=out
-      # The export loses the mode bit, so the chmod is not optional: a static binary that cannot be
-      # executed is a green build that publishes nothing runnable.
-      chmod +x out/qits-ci-runner
-      qits-publish daemon submit \
-        --name qits-ci-runner --version "$QITS_VERSION" --file out/qits-ci-runner
 
   - image: qits/build-images/maven-base:latest
     timeout-seconds: 1800
