@@ -118,6 +118,9 @@ public final class BuildPlane {
   private final Docker docker;
   private final String dockerBinary;
   private final String image;
+  private final List<String> httpRegistries;
+  private final List<String> registryMirrors;
+  private final List<String> caBundleCandidates;
   private final String toml;
   private final Optional<String> caBundlePath;
 
@@ -159,8 +162,42 @@ public final class BuildPlane {
     this.docker = docker;
     this.dockerBinary = dockerBinary;
     this.image = image;
+    this.httpRegistries = List.copyOf(httpRegistries);
+    this.registryMirrors = List.copyOf(registryMirrors);
+    this.caBundleCandidates = List.copyOf(caBundleCandidates);
     this.toml = renderToml(httpRegistries, registryMirrors);
     this.caBundlePath = probeCaBundle(caBundleCandidates);
+  }
+
+  /**
+   * A new BuildPlane with this one's env-configured {@link #registryMirrors} merged with {@code
+   * ackMirrors} — qits-ci's own committed-spelling → public-name map, off {@link
+   * eu.wohlben.qits.cirunner.protocol.Ack#registryMirrors()} — overriding any entry for the same
+   * source host. Everything else (the image, the plain-HTTP registries, the CA bundle candidates)
+   * rides across unchanged.
+   *
+   * <p><b>Always call this on the original, env-configured instance</b> — {@code Main} built it
+   * once from {@code RunnerEnv} — never on a BuildPlane this method already produced: qits-ci sends
+   * its whole current map on every {@code Ack}, not a delta, so merging it against a previous
+   * merge's result would leave a host that dropped out of a later map still rewritten from an
+   * earlier one. {@link Launcher} keeps the two references apart for exactly this reason.
+   *
+   * <p>The result's rendering — and so its {@link #stamp}s — differs from this one's whenever the
+   * merge actually changes something, which is the whole mechanism: {@link #ensure} compares the
+   * stamp it is holding against the container's own label and only replaces the container when they
+   * differ, so swapping in the merged BuildPlane changes nothing until the next build asks for one,
+   * never a build already in flight against the old one.
+   */
+  public BuildPlane withRegistryMirrors(Map<String, String> ackMirrors) {
+    List<String> merged = new ArrayList<>();
+    for (String pair : registryMirrors) {
+      String from = pair.substring(0, pair.indexOf('='));
+      if (!ackMirrors.containsKey(from)) {
+        merged.add(pair);
+      }
+    }
+    ackMirrors.forEach((from, to) -> merged.add(from + "=" + to));
+    return new BuildPlane(docker, dockerBinary, image, httpRegistries, merged, caBundleCandidates);
   }
 
   /**

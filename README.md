@@ -264,7 +264,7 @@ container this is, what it was started with, and its successor). Every docker ca
 
 ## The conversation
 
-    Hello{runnerVersion, capabilityVersion, slots, capabilities} → Ack{capabilityVersion, slots}
+    Hello{runnerVersion, capabilityVersion, slots, capabilities} → Ack{capabilityVersion, slots, registryMirrors?}
     Backlog{queued}*                         pushed whenever the queue changes
     Reserve → Take{run} | Nothing            one outstanding at a time
     Launch{run, step, workloadSpec} → Launched{containerId} | LaunchFailed{detail}
@@ -286,6 +286,10 @@ draining, and a person re-pastes the install line (see "Updating").
 them the same way — it still gets no work while quarantined, because the CI is the one answering
 every `Reserve` with `Nothing`, but its log says nothing about why. `CAPABILITY_VERSION` does not
 move for them.
+
+**`Ack.registryMirrors` is additive too**, and not only-on-the-first-`Ack` either: qits-ci re-sends
+`Ack` whenever the runner's admin-edited slot cap changes, and a runner older than this field simply
+ignores the key — see "The build plane" for what it does when it is understood.
 
 **A runner's own container is labelled `qits.ci.runner.process=<id>`**, and its version
 `qits.ci.runner.version=<version>` — never `qits.ci.runner=<id>`, the step label the sweep below
@@ -325,6 +329,23 @@ container writes to `/etc/buildkit/buildkitd.toml` itself. The container carries
 hash of the image, the toml, the start script and the CA bundle mounted into it (below), and a
 builder whose stamp differs from the configured one is removed and started again with the new
 configuration.
+
+**On the EDGE plane, `Ack.registryMirrors` is what actually rewrites a `FROM`.** The platform's own
+Dockerfiles commit the MACHINE spellings (`mirror.dev.localhost:8080`, `registry.dev.localhost:8080`,
+…) — what the platform's own buildkitd rewrites to its internal aliases — and a remote runner cannot
+resolve those. qits-ci knows both spellings, so its `Ack` carries the map from the committed spelling
+to the PUBLIC name (`mirror.qits.<domain>`, `registry.qits.<domain>`, …) a runner outside the
+platform's network can actually dial, and `Launcher.onAck` merges it over
+`QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS`, overriding any entry for the same source host — the two
+mechanisms answer different questions (the operator's env var is for a runner sharing the platform
+host's own `qits-net`; the `Ack` map is for one that is not). The merged `BuildPlane`'s stamp differs
+from the unmerged one whenever the map actually changes something, so `ensure` swaps the builder on
+the *next* build that needs one — never a build already in flight — the same guarantee a bumped image
+pin or a changed CA bundle path already gets. The public targets are always HTTPS with a
+publicly-issued certificate, so they are never added to the `http = true` set; only what
+`QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES` names is. One line to the runner's log per actual change —
+`ci-runner builder mirrors from qits-ci: <n> registries` — never one per `Ack`, since qits-ci resends
+`Ack` for reasons (a slots change) that carry the same map every time.
 
 **The step image is pulled under the launch's own login.** When a spec's environment carries
 `QITS_CI_REGISTRY_AUTH_CONFIG` — the docker `config.json` document qits-ci sends as the run's
@@ -375,6 +396,27 @@ On the **INTERNAL plane** — a runner sharing the platform host's `qits-net` �
 aliases instead, so no certificate is in question there at all. **On the EDGE plane both stay empty**
 — every registry a builder reaches from there is HTTPS with a public chain, and setting either would
 rewrite an in-network spelling nothing on that plane resolves.
+
+**What actually rewrites a `FROM` line on the EDGE plane comes from qits-ci, on connect.** The
+platform's own committed Dockerfiles name the MACHINE spellings (`mirror.dev.localhost:8080`,
+`registry.dev.localhost:8080`, …) — what the platform's own buildkitd rewrites to its internal
+aliases, and what nothing outside the platform's network can resolve. qits-ci is the one side that
+knows both spellings, so its `Ack` carries the committed-spelling → public-name map
+(`Ack.registryMirrors`), and the runner merges it into the builder's `buildkitd.toml` the same way an
+operator's `QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS` entry would be — see "The build plane" above.
+Nobody on the EDGE plane configures this by hand.
+
+**Credentials for a rewritten mirror ride the step's own login, not a builder secret.** buildkitd
+never holds a registry credential of its own; a resolver that needs one asks the client session
+`buildctl` opened for the build — the one over which it dials this builder — for credentials keyed
+to the exact host it is about to contact. After a `registry.*` mirror rewrite that host is the PUBLIC
+name (`mirror.qits.<domain>`, `registry.qits.<domain>`), and the step's own `DOCKER_CONFIG` (from
+`QITS_CI_REGISTRY_AUTH_CONFIG`, built from the run's token — see "The step image is pulled under the
+launch's own login" above) already carries an entry for exactly that host, because that is the host
+the step's own `buildctl`/`docker buildx` invocation was always going to dial. So the mirror rewrite
+needs nothing added to `buildkitd.toml` or to the builder container's own environment — the runner
+never writes a credential there, and this README is where that fact is recorded rather than in code
+that would otherwise look like an oversight.
 
 ## The install-script contract
 

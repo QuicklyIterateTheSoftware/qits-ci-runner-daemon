@@ -227,6 +227,79 @@ class RunnerMainTest {
         docker.calls().stream().anyMatch(c -> c.equals(List.of("rm", "-f", "qits-ci-run-1-x-0"))));
   }
 
+  /** A building step's spec — {@code build: true} — the way {@code BuildPlaneTest}'s builder needs. */
+  private static WorkloadSpec building() {
+    return new WorkloadSpec(
+        "alpine:3", null, null, Map.of(), null, null, null, null, false, true, true, null, null,
+        null, null, null, "qits-ci-run-1-x-0", true);
+  }
+
+  @Test
+  void anAcksRegistryMirrorsReachTheBuilder() throws Exception {
+    docker.answer("inspect", 1, "", "No such object");
+    docker.answer("run", 0, "cid\n", "");
+    host.script =
+        (h, message) -> {
+          if (message instanceof Hello) {
+            h.send(
+                new Ack(
+                    CiRunnerProtocol.CAPABILITY_VERSION,
+                    1,
+                    Map.of(
+                        "mirror.dev.localhost:8080", "mirror.qits.wohlben.eu",
+                        "registry.dev.localhost:8080", "registry.qits.wohlben.eu")));
+          }
+        };
+    start("t", 10_000);
+    host.await(Hello.class);
+    // The Ack carried the map before any Launch — the builder is not up yet, only configured; a
+    // build is what actually brings it up, under the merged toml.
+    host.send(new Launch("run-1", 0, building()));
+    assertEquals(new Launched("run-1", 0, "cid"), host.await(Launched.class));
+
+    List<String> builder =
+        docker.calls().stream()
+            .filter(c -> c.get(0).equals("run") && c.contains("--privileged"))
+            .findFirst()
+            .orElseThrow();
+    String toml = builder.get(builder.indexOf("-e") + 1);
+    assertTrue(
+        toml.contains(
+            "[registry.\"mirror.dev.localhost:8080\"]\n  mirrors = [\"mirror.qits.wohlben.eu\"]"),
+        toml);
+    assertTrue(
+        toml.contains(
+            "[registry.\"registry.dev.localhost:8080\"]\n  mirrors = [\"registry.qits.wohlben.eu\"]"),
+        toml);
+  }
+
+  /**
+   * qits-ci re-sends {@code Ack} for reasons that have nothing to do with the mirror map — an admin
+   * raising the slot cap, say — and the runner must pick up every one, not just the one that
+   * answered its {@code Hello}. Shaped like {@code aBacklogAsksForARunAndATakeAsksForTheNextWhileASlotIsFree}:
+   * a cap of 3 lets three Reserve/Take round trips happen with no Released between them, which a
+   * cap still stuck at the first Ack's 1 could never do.
+   */
+  @Test
+  void aLaterAckWithANewSlotsCapUpdatesTheRunnersCap() throws Exception {
+    host.script =
+        (h, message) -> {
+          if (message instanceof Hello) {
+            h.send(new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 1));
+            h.send(new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 3));
+            h.send(new Backlog(3));
+          } else if (message instanceof Reserve) {
+            int reserves = h.all(Reserve.class).size();
+            h.send(new Take("run-" + reserves, "repo", "main", "abc"));
+          }
+        };
+    start("t", 10_000);
+
+    host.await(Reserve.class, 3);
+    Thread.sleep(300);
+    assertEquals(3, host.all(Reserve.class).size(), "three slots, three runs, no fourth Reserve");
+  }
+
   /**
    * The hop a TelemetryTest cannot see: the runner hands its export the bearer it dials with, and
    * the lines it logged before it had one — its registration — are shipped with it.

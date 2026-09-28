@@ -203,6 +203,72 @@ class LauncherTest {
     assertEquals("tcp://elsewhere:1234", envValue(step, "BUILDKIT_HOST"));
   }
 
+  // --- qits-ci's registry mirrors from Ack (qits-478) ---------------------------------------------
+
+  @Test
+  void anAckCarryingMirrorsRewritesTheBuilderTheNextBuildUses() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir).answer("inspect", 1, "", "No such object").answer("run", 0, "cid\n", "");
+    Launcher launcher =
+        new Launcher(fake.docker(10), fake.binary, "r1", new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0"));
+
+    launcher.onAck(
+        Map.of(
+            "mirror.dev.localhost:8080", "mirror.qits.wohlben.eu",
+            "registry.dev.localhost:8080", "registry.qits.wohlben.eu"));
+    launcher.launch(new Launch("run-1", 0, building(null, Map.of(), false)));
+
+    List<String> builder =
+        fake.calls().stream().filter(c -> c.get(0).equals("run") && c.contains("--privileged")).findFirst().orElseThrow();
+    String toml = builder.get(builder.indexOf("-e") + 1);
+    assertTrue(toml.contains("[registry.\"mirror.dev.localhost:8080\"]\n  mirrors = [\"mirror.qits.wohlben.eu\"]"), toml);
+    assertTrue(toml.contains("[registry.\"registry.dev.localhost:8080\"]\n  mirrors = [\"registry.qits.wohlben.eu\"]"), toml);
+    assertFalse(toml.contains("http = true"), "an ack mirror target is https with a public certificate");
+  }
+
+  @Test
+  void aNullOrEmptyAckLeavesTheBuilderConfigurationAlone() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir).answer("inspect", 1, "", "No such object").answer("run", 0, "cid\n", "");
+    BuildPlane envPlane = new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0");
+    Launcher launcher = new Launcher(fake.docker(10), fake.binary, "r1", envPlane);
+
+    launcher.onAck(null);
+    launcher.onAck(Map.of());
+    launcher.launch(new Launch("run-1", 0, building(null, Map.of(), false)));
+
+    List<String> builder =
+        fake.calls().stream().filter(c -> c.get(0).equals("run") && c.contains("--privileged")).findFirst().orElseThrow();
+    assertTrue(builder.contains("qits.ci.runner.buildkitd=" + envPlane.stamp()));
+  }
+
+  @Test
+  void aSecondAckWithTheSameMirrorsDoesNotRecreateAnAlreadyRunningBuilder() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir).answer("inspect", 1, "", "No such object").answer("run", 0, "cid\n", "");
+    Launcher launcher =
+        new Launcher(fake.docker(10), fake.binary, "r1", new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0"));
+    Map<String, String> mirrors = Map.of("mirror.dev.localhost:8080", "mirror.qits.wohlben.eu");
+    launcher.onAck(mirrors);
+    launcher.launch(new Launch("run-1", 0, building(null, Map.of(), false)));
+    String stamp =
+        fake.calls().stream()
+            .filter(c -> c.get(0).equals("run") && c.contains("--privileged"))
+            .findFirst()
+            .orElseThrow()
+            .stream()
+            .filter(a -> a.startsWith("qits.ci.runner.buildkitd="))
+            .findFirst()
+            .orElseThrow();
+    fake.answer("inspect", 0, stamp.substring(stamp.indexOf('=') + 1) + "|running\n", "");
+
+    // Same map again — a slots-only Ack, say — must not force the builder to be replaced.
+    launcher.onAck(mirrors);
+    launcher.launch(new Launch("run-2", 0, building(null, Map.of(), false)));
+
+    assertEquals(0, fake.calls("rm").size());
+  }
+
   // --- the launch's own registry login (qits-478) ------------------------------------------------
 
   private static final String IMAGE =

@@ -1,11 +1,13 @@
 package eu.wohlben.qits.cirunner;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
@@ -241,6 +243,96 @@ class BuildPlaneTest {
 
     assertEquals(Optional.empty(), withoutBundle.ensure(null));
     assertEquals(List.of(List.of("rm", "-f", "qits-ci-runner-buildkitd")), fake.calls("rm"));
+  }
+
+  /**
+   * What qits-ci's Ack carries for a remote runner: the committed spelling to the public name. A
+   * {@code LinkedHashMap}, not {@code Map.of} — its iteration order is salted per JVM and would make
+   * the rendering-order assertions below flake about one run in two.
+   */
+  private static final Map<String, String> ACK_MIRRORS = new java.util.LinkedHashMap<>();
+
+  static {
+    ACK_MIRRORS.put("mirror.dev.localhost:8080", "mirror.qits.wohlben.eu");
+    ACK_MIRRORS.put("registry.dev.localhost:8080", "registry.qits.wohlben.eu");
+  }
+
+  @Test
+  void ackMirrorsAreAddedAsTheirOwnTablesWithNoHttpFlag() {
+    BuildPlane plane = new BuildPlane(null, "docker", "moby/buildkit:v0.33.0");
+    BuildPlane rewritten = plane.withRegistryMirrors(ACK_MIRRORS);
+
+    assertEquals(
+        """
+        [worker.oci]
+          networkMode = "host"
+          gc = true
+        [dns]
+          nameservers = ["127.0.0.11"]
+        [registry."mirror.dev.localhost:8080"]
+          mirrors = ["mirror.qits.wohlben.eu"]
+        [registry."registry.dev.localhost:8080"]
+          mirrors = ["registry.qits.wohlben.eu"]
+        """,
+        rewritten.toml());
+  }
+
+  @Test
+  void ackMirrorsOverrideAnEnvConfiguredMirrorForTheSameHostAndLeaveOthersAlone() {
+    // registry.dev.localhost:8080 is env-configured to an internal mirror; the ack rewrites it to
+    // the public one instead. docker.io, untouched by the ack, keeps its env-configured mirror.
+    BuildPlane plane = new BuildPlane(null, "docker", "moby/buildkit:v0.33.0", List.of(), MIRRORS);
+
+    BuildPlane rewritten = plane.withRegistryMirrors(ACK_MIRRORS);
+
+    assertEquals(
+        """
+        [worker.oci]
+          networkMode = "host"
+          gc = true
+        [dns]
+          nameservers = ["127.0.0.11"]
+        [registry."docker.io"]
+          mirrors = ["dev-qits-platform-mirror:8080/hub"]
+        [registry."dev-qits-artifacts:8080"]
+          mirrors = ["dev-qits-artifacts:8080"]
+        [registry."mirror.dev.localhost:8080"]
+          mirrors = ["mirror.qits.wohlben.eu"]
+        [registry."registry.dev.localhost:8080"]
+          mirrors = ["registry.qits.wohlben.eu"]
+        """,
+        rewritten.toml());
+  }
+
+  @Test
+  void aRewriteByAckLeavesTheImageHttpRegistriesAndCaBundleCandidatesUnchanged() throws Exception {
+    FakeDocker fake = new FakeDocker(dir).answer("inspect", 1, "", "No such object");
+    BuildPlane plane =
+        new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0", HTTP, List.of());
+    BuildPlane rewritten = plane.withRegistryMirrors(ACK_MIRRORS);
+
+    assertEquals(Optional.empty(), rewritten.ensure(null));
+    List<String> run = fake.calls("run").getFirst();
+    assertTrue(run.contains(RunnerArgv.requireImage("moby/buildkit:v0.33.0")));
+    // The env http registries still render http = true; the ack's public targets never do.
+    assertTrue(run.get(run.indexOf("-e") + 1).contains("[registry.\"dev-qits-artifacts:8080\"]\n  http = true"));
+    assertFalse(
+        run.get(run.indexOf("-e") + 1).contains("mirror.qits.wohlben.eu\"]\n  http = true"),
+        "an ack mirror target is HTTPS with a public certificate, never http = true");
+  }
+
+  @Test
+  void ackMirrorsChangeTheStampSoTheNextEnsureRecreatesTheBuilder() throws Exception {
+    FakeDocker fake = new FakeDocker(dir);
+    BuildPlane plane = new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0");
+    BuildPlane rewritten = plane.withRegistryMirrors(ACK_MIRRORS);
+    assertTrue(!plane.stamp().equals(rewritten.stamp()), "a changed mirror map is stamp material");
+    // The running builder was started under the env-only configuration.
+    fake.answer("inspect", 0, plane.stamp() + "|running\n", "");
+
+    assertEquals(Optional.empty(), rewritten.ensure(null));
+    assertEquals(List.of(List.of("rm", "-f", "qits-ci-runner-buildkitd")), fake.calls("rm"));
+    assertEquals(1, fake.calls("run").size());
   }
 
   @Test

@@ -235,6 +235,7 @@ public final class RunnerMain implements ControlSocket.Listener {
       return;
     }
     LOG.infof("ci-runner connected slots=%d", ack.slots());
+    parts.launcher().onAck(ack.registryMirrors());
     reserveIf(reservations.onAck(ack.slots()));
     // The first Ack is this version proven on the wire, so whatever this runner ran before it is
     // done with. Once per process (Rollover keeps the latch), and off the loop: it can wait a minute.

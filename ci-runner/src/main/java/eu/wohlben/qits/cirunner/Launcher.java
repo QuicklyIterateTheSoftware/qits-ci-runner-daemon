@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import org.jboss.logging.Logger;
 
 /**
@@ -48,13 +49,46 @@ public final class Launcher {
   private final Docker docker;
   private final String dockerBinary;
   private final String runnerId;
-  private final BuildPlane buildPlane;
+
+  /**
+   * The env-configured builder {@link Main} built from {@code RunnerEnv} — kept aside, never
+   * mutated, so every {@link #onAck} merges qits-ci's latest map against the same baseline rather
+   * than layering it onto whatever a previous {@code Ack} produced. See {@link
+   * BuildPlane#withRegistryMirrors}.
+   */
+  private final BuildPlane envBuildPlane;
+
+  /** What {@link #launch} actually uses — swapped by {@link #onAck}, read fresh on every launch. */
+  private final AtomicReference<BuildPlane> buildPlane;
+
+  /** The last map actually applied, so a repeat {@code Ack} (a slots-only change, say) logs nothing. */
+  private volatile Map<String, String> appliedRegistryMirrors = Map.of();
 
   public Launcher(Docker docker, String dockerBinary, String runnerId, BuildPlane buildPlane) {
     this.docker = docker;
     this.dockerBinary = dockerBinary;
     this.runnerId = runnerId;
-    this.buildPlane = buildPlane;
+    this.envBuildPlane = buildPlane;
+    this.buildPlane = new AtomicReference<>(buildPlane);
+  }
+
+  /**
+   * qits-ci's {@code Ack} carried a registry-mirror map for the builder ({@link
+   * eu.wohlben.qits.cirunner.protocol.Ack#registryMirrors()}): merge it over the env-configured
+   * mirrors and swap the {@link BuildPlane} the next {@link #launch} will {@link BuildPlane#ensure
+   * ensure}. {@code null} or empty — no host has sent one yet, or this {@code Ack} is a plain
+   * slots update — leaves the current builder exactly as it was; qits-ci resends {@code Ack} for
+   * reasons that have nothing to do with the mirror map; nothing here reserves this method a
+   * "first call only" the way {@code Rollover.removePredecessors} is.
+   */
+  public void onAck(Map<String, String> ackMirrors) {
+    Map<String, String> normalized = ackMirrors == null ? Map.of() : ackMirrors;
+    if (normalized.isEmpty() || normalized.equals(appliedRegistryMirrors)) {
+      return;
+    }
+    appliedRegistryMirrors = normalized;
+    buildPlane.set(envBuildPlane.withRegistryMirrors(normalized));
+    LOG.infof("ci-runner builder mirrors from qits-ci: %d registries", normalized.size());
   }
 
   public CiRunnerMessage launch(Launch launch) {
@@ -82,7 +116,7 @@ public final class Launcher {
       return failed(launch, "refused by the runner: " + refused.getMessage());
     }
     if (builds) {
-      Optional<String> builderFailure = buildPlane.ensure(spec.network());
+      Optional<String> builderFailure = buildPlane.get().ensure(spec.network());
       if (builderFailure.isPresent()) {
         return failed(launch, "the build plane is not available: " + builderFailure.get());
       }
