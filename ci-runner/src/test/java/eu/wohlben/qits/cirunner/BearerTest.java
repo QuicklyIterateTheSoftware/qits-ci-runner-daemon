@@ -1,10 +1,9 @@
 package eu.wohlben.qits.cirunner;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import io.vertx.core.Vertx;
-import java.util.Base64;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.AfterEach;
@@ -32,11 +31,13 @@ class BearerTest {
       Bearer bearer = new Bearer(new Http(vertx, 5_000), client, now::get);
 
       assertEquals("runner-access-token", get(bearer));
-      String basic =
-          Base64.getEncoder().encodeToString("ci-runner-r1:client-secret".getBytes());
+      // client_secret_post: the pair is in the form body, and no Authorization header is sent —
+      // the edge a remote runner mints through consumes one, and the idp then sees no client.
       assertEquals(
-          "Basic " + basic + " grant_type=client_credentials&audience=qits-ci",
+          "grant_type=client_credentials&client_id=ci-runner-r1&client_secret=client-secret"
+              + "&audience=qits-ci",
           host.tokenBodies.getFirst());
+      assertNull(host.tokenAuthorizations.getFirst(), "no Authorization header");
 
       now.addAndGet(239_000); // 300s lifetime, 60s margin: still good at 239s
       assertEquals("runner-access-token", get(bearer));
@@ -67,7 +68,28 @@ class BearerTest {
       now.set(41_000);
       get(bearer);
       assertEquals(2, host.tokenBodies.size());
-      assertTrue(host.tokenBodies.getFirst().endsWith("grant_type=client_credentials"), "no audience, none sent");
+      assertEquals(
+          "grant_type=client_credentials&client_id=c&client_secret=s",
+          host.tokenBodies.getFirst(),
+          "no audience, none sent");
+    }
+  }
+
+  @Test
+  void aPairOutsideTheUnreservedSetIsFormEncodedInTheBody() throws Exception {
+    try (FakeHost host = new FakeHost(vertx)) {
+      Bearer bearer =
+          new Bearer(
+              new Http(vertx, 5_000),
+              new ClientCredentials(
+                  "ci runner", "s3cr3t+/=&x", host.base() + "/token", "qits-platform",
+                  "ws://127.0.0.1:1/x", ""),
+              () -> 0L);
+      get(bearer);
+      assertEquals(
+          "grant_type=client_credentials&client_id=ci+runner&client_secret=s3cr3t%2B%2F%3D%26x"
+              + "&audience=qits-platform",
+          host.tokenBodies.getFirst());
     }
   }
 

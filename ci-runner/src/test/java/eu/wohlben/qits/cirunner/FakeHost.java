@@ -27,6 +27,8 @@ final class FakeHost implements AutoCloseable {
   final List<String> registerBodies = Collections.synchronizedList(new ArrayList<>());
   final List<String> registerAuthorizations = Collections.synchronizedList(new ArrayList<>());
   final List<String> tokenBodies = Collections.synchronizedList(new ArrayList<>());
+  /** The Authorization header each token request carried, {@code null} for none. */
+  final List<String> tokenAuthorizations = Collections.synchronizedList(new ArrayList<>());
   final AtomicInteger upgrades = new AtomicInteger();
 
   volatile int registerStatus = 200;
@@ -80,7 +82,17 @@ final class FakeHost implements AutoCloseable {
                     .setStatusCode(registerStatus)
                     .end(registerBody != null ? registerBody : clientJson());
               } else if (request.path().equals("/token")) {
-                tokenBodies.add(request.getHeader("Authorization") + " " + body);
+                tokenBodies.add(body.toString());
+                tokenAuthorizations.add(request.getHeader("Authorization"));
+                if (request.getHeader("Authorization") != null) {
+                  // What the live edge answers: it consumes an Authorization header as its own
+                  // credential, so a client that authenticates with one reaches the idp as nobody.
+                  request
+                      .response()
+                      .setStatusCode(401)
+                      .end("{\"error\":\"client authentication is required\"}");
+                  return;
+                }
                 request
                     .response()
                     .end(

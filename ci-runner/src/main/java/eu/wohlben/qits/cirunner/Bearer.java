@@ -4,13 +4,18 @@ import io.vertx.core.Future;
 import io.vertx.core.json.JsonObject;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.Map;
 import java.util.function.LongSupplier;
 
 /**
  * The runner's access token: a {@code client_credentials} grant at the client's {@code tokenUrl}
  * with its {@code audience}, held in memory only and refreshed before it expires.
+ *
+ * <p><b>The client authenticates with {@code client_secret_post}</b> — its id and secret in the form
+ * body — and never with HTTP Basic. A runner mints through the public edge, and the edge consumes a
+ * Basic {@code Authorization} header as its own credential: the token endpoint behind it then sees
+ * no client at all and answers 401 "client authentication is required" (measured live). The body is
+ * the one place the edge leaves alone, so no {@code Authorization} header goes to the token endpoint.
  *
  * <p>Never on disk and never logged — the file on disk is the client, from which a token can always
  * be minted again, and a token written anywhere would be one more copy of a credential to protect.
@@ -40,12 +45,12 @@ public final class Bearer {
     if (token != null && nowMillis.getAsLong() < refreshAtMillis) {
       return Future.succeededFuture(token);
     }
-    String basic =
-        Base64.getEncoder()
-            .encodeToString(
-                (form(client.clientId()) + ":" + form(client.secret()))
-                    .getBytes(StandardCharsets.UTF_8));
-    StringBuilder body = new StringBuilder("grant_type=client_credentials");
+    StringBuilder body =
+        new StringBuilder("grant_type=client_credentials")
+            .append("&client_id=")
+            .append(form(client.clientId()))
+            .append("&client_secret=")
+            .append(form(client.secret()));
     if (client.audience() != null && !client.audience().isBlank()) {
       body.append("&audience=").append(form(client.audience()));
     }
@@ -53,7 +58,6 @@ public final class Bearer {
     return http.post(
             client.tokenUrl(),
             Map.of(
-                "Authorization", "Basic " + basic,
                 "Content-Type", "application/x-www-form-urlencoded",
                 "Accept", "application/json"),
             body.toString())
@@ -79,7 +83,7 @@ public final class Bearer {
             });
   }
 
-  /** RFC 6749 §2.3.1: the pair is form-encoded before it is Basic-encoded. */
+  /** {@code application/x-www-form-urlencoded}, RFC 6749 appendix B. */
   private static String form(String value) {
     return URLEncoder.encode(value, StandardCharsets.UTF_8);
   }
