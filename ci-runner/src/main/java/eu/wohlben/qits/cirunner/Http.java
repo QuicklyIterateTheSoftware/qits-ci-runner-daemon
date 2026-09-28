@@ -9,9 +9,9 @@ import io.vertx.core.http.RequestOptions;
 import java.util.Map;
 
 /**
- * The two plain HTTP calls this runner makes — the register door and the token endpoint — on the
- * vertx-core client the WebSocket already brings. Not a REST client and not Jackson: two POSTs do
- * not justify either in a static binary.
+ * The plain HTTP calls this runner makes — the register door, the token endpoint and its log export
+ * ({@link Telemetry}) — on the vertx-core client the WebSocket already brings. Not a REST client and
+ * not Jackson: three POSTs do not justify either in a static binary.
  */
 public final class Http {
 
@@ -28,6 +28,11 @@ public final class Http {
 
   /** POST {@code body} to an absolute url. A transport failure fails the future. */
   public Future<Response> post(String url, Map<String, String> headers, String body) {
+    return post(url, headers, Buffer.buffer(body));
+  }
+
+  /** POST a binary {@code body} to an absolute url. A transport failure fails the future. */
+  public Future<Response> post(String url, Map<String, String> headers, Buffer body) {
     RequestOptions options =
         new RequestOptions()
             .setMethod(HttpMethod.POST)
@@ -37,7 +42,7 @@ public final class Http {
     headers.forEach(options::addHeader);
     return client
         .request(options)
-        .compose(request -> request.send(Buffer.buffer(body)))
+        .compose(request -> request.send(body))
         .compose(
             response ->
                 response.body().map(buffer -> new Response(response.statusCode(), buffer.toString())));

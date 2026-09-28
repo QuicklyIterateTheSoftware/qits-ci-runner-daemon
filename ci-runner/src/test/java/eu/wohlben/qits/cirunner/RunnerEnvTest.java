@@ -1,6 +1,7 @@
 package eu.wohlben.qits.cirunner;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -145,5 +146,29 @@ class RunnerEnvTest {
                         "soon"))
             .getMessage()
             .startsWith("QITS_CI_RUNNER_ROLLOVER_TIMEOUT"));
+  }
+
+  @Test
+  void theTelemetryUrlIsTheCisEdgeSiblingUnlessSetAndOffWhenSetEmpty() throws Exception {
+    assertEquals(
+        "https://observability.qits.example.eu/observability/api/otel",
+        RunnerEnv.telemetryUrl(null, "https://ci.qits.example.eu"));
+    assertEquals(
+        "https://observability.qits.example.eu:8443/observability/api/otel",
+        RunnerEnv.telemetryUrl(null, "https://CI.qits.example.eu:8443/ci"));
+    assertNull(
+        RunnerEnv.telemetryUrl(null, "http://dev-qits-ci:8080"),
+        "an address with no ci. label has no sibling to derive");
+    assertNull(RunnerEnv.telemetryUrl("", "https://ci.qits.example.eu"), "set and empty is off");
+    assertNull(RunnerEnv.telemetryUrl("  ", "https://ci.qits.example.eu"));
+    assertEquals(
+        "http://collector:4318",
+        RunnerEnv.telemetryUrl("http://collector:4318/", "https://ci.qits.example.eu"));
+    assertTrue(
+        assertThrows(
+                RunnerEnv.Invalid.class,
+                () -> RunnerEnv.telemetryUrl("collector:4318", "https://ci.qits.example.eu"))
+            .getMessage()
+            .startsWith("QITS_CI_RUNNER_TELEMETRY_URL"));
   }
 }

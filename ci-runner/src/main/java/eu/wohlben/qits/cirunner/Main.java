@@ -34,6 +34,13 @@ public class Main {
    */
   static final String PRINT_VERSION = "QITS_CI_RUNNER_PRINT_VERSION";
 
+  /**
+   * Read raw rather than through config, because its empty value means something: set and empty
+   * switches the log export off, where unset derives it (see {@link RunnerEnv#telemetryUrl}) — and
+   * SmallRye reads an empty value as no value at all.
+   */
+  static final String TELEMETRY_URL = "QITS_CI_RUNNER_TELEMETRY_URL";
+
   public static void main(String... args) {
     if (printsVersion(System.getenv(PRINT_VERSION))) {
       System.out.println(CiRunnerBinary.VERSION);
@@ -102,6 +109,7 @@ public class Main {
     @Override
     public int run(String... args) {
       RunnerEnv env;
+      String telemetryUrl;
       try {
         env =
             RunnerEnv.parse(
@@ -116,6 +124,7 @@ public class Main {
                 buildkitHttpRegistries.orElse(null),
                 buildkitRegistryMirrors.orElse(null),
                 rolloverTimeout.orElse(null));
+        telemetryUrl = RunnerEnv.telemetryUrl(System.getenv(TELEMETRY_URL), env.url());
       } catch (RunnerEnv.Invalid invalid) {
         // The container's log is the only channel before anything is dialled, so this line is the whole
         // diagnosis an operator gets. It names the variable, never a value that could be a secret.
@@ -125,8 +134,31 @@ public class Main {
       Docker docker = Docker.forking(env.dockerTimeoutSeconds());
       Http http = new Http(vertx, httpTimeoutMillis);
       Optional<String> self = SelfContainer.detect();
+      Capabilities capabilities = capabilities();
+      Telemetry telemetry =
+          telemetryUrl == null
+              ? Telemetry.off()
+              : new Telemetry(
+                  vertx,
+                  http,
+                  telemetryUrl,
+                  telemetryResource(env.runnerId(), self, capabilities),
+                  CiRunnerBinary.VERSION,
+                  Telemetry.Settings.defaults(),
+                  () -> System.currentTimeMillis() * 1_000_000L);
+      // On the root logger, so every line this process writes is shipped — queued from here, sent
+      // once the runner has a bearer.
+      java.util.logging.Logger.getLogger("").addHandler(telemetry);
       if (self.isPresent()) {
         LOG.infof("ci-runner %s is running in container %s", CiRunnerBinary.VERSION, self.get());
+      }
+      if (telemetryUrl == null) {
+        LOG.infof(
+            "ci-runner ships its log nowhere (%s is %s)",
+            TELEMETRY_URL,
+            System.getenv(TELEMETRY_URL) == null
+                ? "unset and " + env.url() + " has no ci. host to derive it from"
+                : "empty");
       }
       BuildPlane buildPlane =
           new BuildPlane(
@@ -148,7 +180,7 @@ public class Main {
                   new BootSweep(docker, env.dockerBinary(), env.runnerId()),
                   new Launcher(docker, env.dockerBinary(), env.runnerId(), buildPlane),
                   new Reaper(docker, env.dockerBinary(), env.runnerId()),
-                  capabilities(),
+                  capabilities,
                   client -> new Bearer(http, client, System::currentTimeMillis),
                   (bearer, held) ->
                       new Rollover(
@@ -159,7 +191,8 @@ public class Main {
                           self,
                           Rollover.Settings.defaults(env.rolloverTimeoutSeconds()),
                           bearer,
-                          held)));
+                          held),
+                  telemetry));
       return runner.run();
     }
   }
@@ -175,6 +208,24 @@ public class Main {
    */
   static List<String> caBundleCandidates(Optional<String> self) {
     return self.isPresent() ? List.of() : BuildPlane.HOST_CA_BUNDLE_CANDIDATES;
+  }
+
+  /**
+   * Who is speaking, on every shipped line: one bucket, {@link Telemetry#SERVICE_NAME}, for every
+   * runner, told apart by {@code qits.ci.runner.id} — the id an operator sees in the CI's runner list
+   * — and by the container it runs in. The runner's display name is the CI's and is never sent to
+   * the runner, so it is not here.
+   */
+  static Map<String, String> telemetryResource(
+      String runnerId, Optional<String> self, Capabilities capabilities) {
+    Map<String, String> resource = new java.util.LinkedHashMap<>();
+    resource.put("service.name", Telemetry.SERVICE_NAME);
+    resource.put("service.version", CiRunnerBinary.VERSION);
+    resource.put("service.instance.id", self.orElse(runnerId));
+    resource.put("qits.ci.runner.id", runnerId);
+    resource.put("host.arch", capabilities.arch());
+    resource.put("os.type", capabilities.os());
+    return resource;
   }
 
   /**

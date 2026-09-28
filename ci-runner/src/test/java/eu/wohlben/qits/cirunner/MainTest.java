@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
-/** The two decisions {@link Main} makes before any plain class is built. */
+/** The decisions {@link Main} makes before any plain class is built. */
 class MainTest {
 
   @Test
@@ -25,5 +25,24 @@ class MainTest {
     // The probe would find the image's own bundle and the bind would be resolved on the host.
     assertEquals(List.of(), Main.caBundleCandidates(Optional.of("0123456789ab")));
     assertEquals(BuildPlane.HOST_CA_BUNDLE_CANDIDATES, Main.caBundleCandidates(Optional.empty()));
+  }
+
+  @Test
+  void everyShippedLineSaysWhichRunnerOnWhichContainerAndArch() {
+    eu.wohlben.qits.cirunner.protocol.Capabilities caps =
+        new eu.wohlben.qits.cirunner.protocol.Capabilities(true, "arm64", "linux", java.util.Map.of());
+    java.util.Map<String, String> resource =
+        Main.telemetryResource("r1", Optional.of("0123456789ab"), caps);
+    assertEquals("qits-ci-runner", resource.get("service.name"));
+    assertEquals(
+        eu.wohlben.qits.cirunner.protocol.CiRunnerBinary.VERSION, resource.get("service.version"));
+    assertEquals("0123456789ab", resource.get("service.instance.id"));
+    assertEquals("r1", resource.get("qits.ci.runner.id"));
+    assertEquals("arm64", resource.get("host.arch"));
+    assertEquals("linux", resource.get("os.type"));
+    assertFalse(
+        resource.containsKey("qits.workspace.id"),
+        "the workspace pair would bucket the runner away from its service.name");
+    assertEquals("r1", Main.telemetryResource("r1", Optional.empty(), caps).get("service.instance.id"));
   }
 }

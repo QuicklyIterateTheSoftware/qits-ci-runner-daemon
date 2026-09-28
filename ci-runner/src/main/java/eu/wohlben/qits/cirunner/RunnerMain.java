@@ -55,7 +55,27 @@ public final class RunnerMain implements ControlSocket.Listener {
       Reaper reaper,
       Capabilities capabilities,
       java.util.function.Function<ClientCredentials, Bearer> bearer,
-      Rollover.Factory rollover) {}
+      Rollover.Factory rollover,
+      Telemetry telemetry) {
+
+    /** The parts of a runner that ships its log nowhere. */
+    public Parts(
+        Registration registration,
+        java.util.function.Function<ClientCredentials, ControlSocket.Settings> settings,
+        BootSweep sweep,
+        Launcher launcher,
+        Reaper reaper,
+        Capabilities capabilities,
+        java.util.function.Function<ClientCredentials, Bearer> bearer,
+        Rollover.Factory rollover) {
+      this(
+          registration, settings, sweep, launcher, reaper, capabilities, bearer, rollover,
+          Telemetry.off());
+    }
+  }
+
+  /** How long an exiting runner waits for its last log lines to be shipped. */
+  static final long TELEMETRY_LAST_WORDS_MILLIS = 3_000;
 
   private final Vertx vertx;
   private final RunnerEnv env;
@@ -97,6 +117,8 @@ public final class RunnerMain implements ControlSocket.Listener {
       return failed.exitCode();
     }
     Bearer bearer = parts.bearer().apply(client);
+    // The log export needs the bearer, so it begins here; what was logged before waited for it.
+    parts.telemetry().start(bearer::token);
     rollover = parts.rollover().create(bearer::token, reservations::held);
     socket =
         new ControlSocket(
@@ -120,6 +142,7 @@ public final class RunnerMain implements ControlSocket.Listener {
         r.shutdown();
       }
       workers.shutdownNow();
+      parts.telemetry().stop(TELEMETRY_LAST_WORDS_MILLIS);
     }
   }
 

@@ -63,6 +63,7 @@ class RunnerMainTest {
   private static final String SELF = "0123456789ab";
 
   private Optional<String> self = Optional.of(SELF);
+  private Telemetry telemetry = Telemetry.off();
   private Rollover.Settings rolloverSettings = new Rollover.Settings(100, 400, 3_000, 3_000, 50, 5_000);
 
   @BeforeEach
@@ -107,7 +108,8 @@ class RunnerMainTest {
                         self,
                         rolloverSettings,
                         bearer,
-                        held)));
+                        held),
+                telemetry));
     exit = CompletableFuture.supplyAsync(runner::run);
     return exit;
   }
@@ -221,6 +223,38 @@ class RunnerMainTest {
     assertTrue(run.contains("qits.ci.runner=r1"), run::toString);
     assertTrue(
         docker.calls().stream().anyMatch(c -> c.equals(List.of("rm", "-f", "qits-ci-run-1-x-0"))));
+  }
+
+  /**
+   * The hop a TelemetryTest cannot see: the runner hands its export the bearer it dials with, and
+   * the lines it logged before it had one — its registration — are shipped with it.
+   */
+  @Test
+  void itShipsItsLogWithTheBearerItDialsWith() throws Exception {
+    telemetry =
+        new Telemetry(
+            vertx,
+            new Http(vertx, 5_000),
+            host.base() + "/otel",
+            Map.of("service.name", Telemetry.SERVICE_NAME),
+            "test",
+            new Telemetry.Settings(100, 50, 50),
+            () -> 1L);
+    java.util.logging.LogRecord registered =
+        new java.util.logging.LogRecord(java.util.logging.Level.INFO, "logged before the bearer");
+    telemetry.publish(registered);
+    ackWith(1, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (host.telemetryBodies.isEmpty() && System.nanoTime() < deadline) {
+      Thread.sleep(20);
+    }
+    assertEquals("Bearer runner-access-token", host.telemetryAuthorizations.getFirst());
+    assertEquals(
+        "logged before the bearer",
+        OtlpDecode.decode(host.telemetryBodies.getFirst()).lines().getFirst().body());
   }
 
   @Test

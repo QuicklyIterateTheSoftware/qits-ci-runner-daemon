@@ -175,6 +175,7 @@ reason, and the install script passes each one that is set in its environment (p
 | `QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES` | Comma list of `host[:port]` the builder speaks plain HTTP to. | empty |
 | `QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS` | Comma list of `from=to` registry rewrites; `to` may carry a path (`mirror:8080/hub`). | empty |
 | `QITS_CI_RUNNER_ROLLOVER_TIMEOUT` | Seconds a successor has to take over before it is removed and the update retried. | `180` |
+| `QITS_CI_RUNNER_TELEMETRY_URL` | The OTLP endpoint the runner's own log is shipped to (`/v1/logs` is appended). Empty switches it off. Not passed by the install script yet. | derived: `https://ci.<domain>` → `https://observability.<domain>/observability/api/otel`; none when the CI url's host is not `ci.…` |
 | `QITS_CI_RUNNER_PRINT_VERSION` | `1`: print the runner version and exit 0, needing nothing else. For the image's smoke test. | unset |
 
 Both builder lists stay empty on a machine that reaches the platform through its public domain —
@@ -187,6 +188,23 @@ push to the platform's plain-HTTP registry. For example:
     QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS=registry.dev.localhost:8080=dev-qits-artifacts:8080,mirror.dev.localhost:8080=dev-qits-platform-mirror:8080,docker.io=dev-qits-platform-mirror:8080/hub
 
 Changing either replaces the builder on its next use (its cache volume survives).
+
+### The runner's own log, on the platform
+
+`docker logs` on the machine is always the whole log. Every line at INFO and above is **also**
+shipped to qits-observability, so a person on the platform can read a runner on somebody else's
+machine: OTLP `http/protobuf` to `https://observability.<domain>/observability/api/otel/v1/logs`,
+through the same public edge, with the runner's own access token as the bearer. The lines land in
+the `_service/qits-ci-runner` source, one bucket for every runner, told apart by the resource
+attributes `qits.ci.runner.id` (the id in the CI UI), `service.instance.id` (the runner's container),
+`service.version` and `host.arch`:
+
+    GET https://observability.<domain>/observability/api/telemetry/logs?source=_service/qits-ci-runner
+
+Shipping never slows the runner: lines wait in a bounded queue (the oldest go first when it is full,
+and how many went is shipped as a line of its own), leave in batches every five seconds, and a batch
+the collector refuses is dropped rather than retried — one log line says shipping stopped, one that it
+resumed. Lines logged before the runner has credentials (its registration) are sent once it does.
 
 ### Exit codes
 
@@ -216,8 +234,8 @@ first.
 Inside `ci-runner/`, `Main` is the only CDI bean. It resolves configuration and news up plain classes:
 `RunnerMain` (the flow), `Registration` and `Bearer` (identity), `ControlSocket` (the connection),
 `Reservations` (slot arithmetic), `Launcher`/`RunnerArgv` (spec → `docker run`), `Reaper`,
-`BootSweep` and `LogTail` (removal, and a removed container's last output), `BuildPlane` (the
-runner's own buildkitd), and `Rollover` with `SelfContainer` and `SelfSpec` (self-update: which
+`BootSweep` and `LogTail` (removal, and a removed container's last output), `Telemetry` and
+`OtlpLogs` (its own log, shipped), `BuildPlane` (the runner's own buildkitd), and `Rollover` with `SelfContainer` and `SelfSpec` (self-update: which
 container this is, what it was started with, and its successor). Every docker call goes through
 `Docker`, under a deadline.
 

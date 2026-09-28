@@ -3,6 +3,7 @@ package eu.wohlben.qits.cirunner;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -154,6 +155,37 @@ public record RunnerEnv(
             "QITS_CI_RUNNER_ROLLOVER_TIMEOUT",
             stripSeconds(rolloverTimeout),
             DEFAULT_ROLLOVER_TIMEOUT_SECONDS));
+  }
+
+  /** A CI url whose host is the edge's {@code ci.} application name, and what follows it. */
+  private static final Pattern CI_HOST = Pattern.compile("(?i)(https?://)ci\\.([^/\\s]+)(/\\S*)?");
+
+  /** Where qits-observability's OTLP receiver lives below its host — its own root path. */
+  public static final String TELEMETRY_PATH = "/observability/api/otel";
+
+  /**
+   * {@code QITS_CI_RUNNER_TELEMETRY_URL}: the OTLP endpoint the runner's log is shipped to, or null
+   * for none.
+   *
+   * <p>Unset ({@code null}) derives it from the CI's url, the way the edge names every application:
+   * {@code https://ci.qits.example.eu} → {@code https://observability.qits.example.eu} + {@link
+   * #TELEMETRY_PATH}. A CI url whose host does not start with {@code ci.} — the platform's own
+   * network, an address — has no such sibling, and derives nothing. Set but empty switches it off,
+   * which is why {@link Main} reads this one variable raw: SmallRye cannot tell empty from unset.
+   */
+  public static String telemetryUrl(String raw, String ciUrl) throws Invalid {
+    if (raw != null) {
+      if (raw.isBlank()) {
+        return null;
+      }
+      String url = raw.trim().replaceAll("/+$", "");
+      if (!url.matches("(?i)https?://[^/\\s]+(/\\S*)?")) {
+        throw new Invalid("QITS_CI_RUNNER_TELEMETRY_URL is not an http(s) url: '" + url + "'");
+      }
+      return url;
+    }
+    Matcher ci = CI_HOST.matcher(ciUrl == null ? "" : ciUrl);
+    return ci.matches() ? ci.group(1) + "observability." + ci.group(2) + TELEMETRY_PATH : null;
   }
 
   private static List<String> httpRegistries(String value) throws Invalid {

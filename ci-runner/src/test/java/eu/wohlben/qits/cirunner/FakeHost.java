@@ -30,6 +30,10 @@ final class FakeHost implements AutoCloseable {
   /** The Authorization header each token request carried, {@code null} for none. */
   final List<String> tokenAuthorizations = Collections.synchronizedList(new ArrayList<>());
   final AtomicInteger upgrades = new AtomicInteger();
+  /** Each log export's body and its Authorization header, in arrival order. */
+  final List<byte[]> telemetryBodies = Collections.synchronizedList(new ArrayList<>());
+  final List<String> telemetryAuthorizations = Collections.synchronizedList(new ArrayList<>());
+  volatile int telemetryStatus = 200;
 
   volatile int registerStatus = 200;
   volatile String registerBody;
@@ -100,6 +104,11 @@ final class FakeHost implements AutoCloseable {
                             .put("access_token", accessToken)
                             .put("expires_in", expiresIn)
                             .encode());
+              } else if (request.path().equals("/otel" + Telemetry.LOGS_PATH)) {
+                // qits-observability's receiver, as the edge forwards it.
+                telemetryBodies.add(body.getBytes());
+                telemetryAuthorizations.add(request.getHeader("Authorization"));
+                request.response().setStatusCode(telemetryStatus).end();
               } else {
                 request.response().setStatusCode(404).end();
               }
