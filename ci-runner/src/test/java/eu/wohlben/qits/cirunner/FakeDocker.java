@@ -29,6 +29,11 @@ final class FakeDocker {
       #!/bin/sh
       dir=$(dirname "$0")
       { for a in "$@"; do printf '%s\\037' "$a"; done; printf '\\036'; } >> "$dir/calls.log"
+      if [ "$1" = "--config" ]; then
+        { stat -c '%a' "$2" "$2/config.json" | tr '\\n' ' '; printf '\\037'; \
+          cat "$2/config.json"; printf '\\036'; } >> "$dir/configs.log"
+        shift 2
+      fi
       key="$1"
       case "$1" in image|network|volume) key="$1-$2";; esac
       a="$dir/answers/$key"
@@ -87,8 +92,42 @@ final class FakeDocker {
     return calls;
   }
 
-  /** The calls whose first argument is {@code verb}. */
+  /**
+   * The calls whose first argument is {@code verb}, a leading {@code --config <dir>} skipped — so a
+   * pull under a launch's login is still a pull.
+   */
   List<List<String>> calls(String verb) throws IOException {
-    return calls().stream().filter(c -> !c.isEmpty() && c.getFirst().equals(verb)).toList();
+    return calls().stream()
+        .map(FakeDocker::withoutConfig)
+        .filter(c -> !c.isEmpty() && c.getFirst().equals(verb))
+        .toList();
+  }
+
+  /** {@code call} without a leading {@code --config <dir>}. */
+  static List<String> withoutConfig(List<String> call) {
+    return call.size() >= 2 && call.getFirst().equals("--config")
+        ? call.subList(2, call.size())
+        : call;
+  }
+
+  /**
+   * What each {@code --config} call found in its directory at the moment docker ran, in call order:
+   * {@code [<dir mode> <file mode>, <config.json>]}. Read by the script itself, because the launcher
+   * deletes the directory as soon as the pull is over.
+   */
+  List<List<String>> configs() throws IOException {
+    Path log = dir.resolve("configs.log");
+    if (!Files.exists(log)) {
+      return List.of();
+    }
+    List<List<String>> configs = new ArrayList<>();
+    for (String record : Files.readString(log, StandardCharsets.UTF_8).split("\u001e")) {
+      if (record.isEmpty()) {
+        continue;
+      }
+      String[] fields = record.split("\u001f", -1);
+      configs.add(List.of(fields[0].strip(), fields[1]));
+    }
+    return configs;
   }
 }

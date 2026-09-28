@@ -1,6 +1,7 @@
 package eu.wohlben.qits.cirunner;
 
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -163,6 +164,37 @@ public final class RunnerArgv {
   /** Fetch the image, so "the registry has no such image" is its own answer rather than a run's. */
   public static List<String> pull(String dockerBinary, String image) {
     return List.of(dockerBinary, "pull", require(IMAGE, "image", image));
+  }
+
+  /**
+   * {@link #imageInspect(String, String)} under the docker client config in {@code configDir}, or
+   * exactly that argv when it is null — see {@link #pull(String, Path, String)}.
+   */
+  public static List<String> imageInspect(String dockerBinary, Path configDir, String image) {
+    return withConfig(imageInspect(dockerBinary, image), configDir);
+  }
+
+  /**
+   * {@link #pull(String, String)} under the docker client config in {@code configDir} — the launch's
+   * own registry login, {@code docker --config <dir>} being the one way to hand a single docker
+   * invocation a credential without writing it into the host's config — or exactly that argv when it
+   * is null.
+   */
+  public static List<String> pull(String dockerBinary, Path configDir, String image) {
+    return withConfig(pull(dockerBinary, image), configDir);
+  }
+
+  /** {@code --config} is a global option, so it goes between the binary and the subcommand. */
+  private static List<String> withConfig(List<String> argv, Path configDir) {
+    if (configDir == null) {
+      return argv;
+    }
+    List<String> configured = new ArrayList<>(argv.size() + 2);
+    configured.add(argv.getFirst());
+    configured.add("--config");
+    configured.add(configDir.toString());
+    configured.addAll(argv.subList(1, argv.size()));
+    return List.copyOf(configured);
   }
 
   /** Remove it, running or not. Every teardown ends here. */

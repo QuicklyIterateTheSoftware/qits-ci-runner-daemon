@@ -9,6 +9,7 @@ import eu.wohlben.qits.cirunner.protocol.Launch;
 import eu.wohlben.qits.cirunner.protocol.LaunchFailed;
 import eu.wohlben.qits.cirunner.protocol.Launched;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -200,5 +201,116 @@ class LauncherTest {
             .findFirst()
             .orElseThrow();
     assertEquals("tcp://elsewhere:1234", envValue(step, "BUILDKIT_HOST"));
+  }
+
+  // --- the launch's own registry login (qits-478) ------------------------------------------------
+
+  private static final String IMAGE =
+      "registry.qits.example.org/qits/build-images/node-docker-base@sha256:"
+          + "25cf82f5aa0f5a3a1c8b0f8e0d7f6e5d4c3b2a1908f7e6d5c4b3a29181706f5e";
+
+  private static final String AUTH = "dG9rZW46cWl0c190b2tfcnVuLTE=";
+
+  private static final String DOCUMENT =
+      "{\"auths\":{\"registry.qits.example.org\":{\"auth\":\"" + AUTH + "\"}}}";
+
+  private static WorkloadSpec plainWithEnv(String image, Map<String, String> env) {
+    return new WorkloadSpec(
+        image, null, null, env, null, null, null, null, false, true, true, null, null, null, null,
+        null, "qits-ci-run-1-x-0", false);
+  }
+
+  @Test
+  void aSpecCarryingARegistryLoginPullsUnderItAndTheDirectoryIsGoneAfterwards() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("image-inspect", 1, "", "No such image")
+            .answer("run", 0, "cid\n", "");
+    assertInstanceOf(
+        Launched.class,
+        launcher(fake)
+            .launch(
+                new Launch(
+                    "run-1", 0, plainWithEnv(IMAGE, Map.of("QITS_CI_REGISTRY_AUTH_CONFIG", DOCUMENT)))));
+
+    List<List<String>> calls = fake.calls();
+    List<String> inspect = calls.get(0);
+    List<String> pull = calls.get(1);
+    assertEquals("--config", inspect.get(0));
+    assertEquals(List.of("image", "inspect", "--format", "{{.Id}}", IMAGE), inspect.subList(2, inspect.size()));
+    assertEquals("--config", pull.get(0));
+    assertEquals(List.of("pull", IMAGE), pull.subList(2, pull.size()));
+    Path configDir = Path.of(pull.get(1));
+    assertEquals(inspect.get(1), pull.get(1), "one login for the one launch");
+    // What docker found there, read by the fake at the moment it ran: the document, and nobody else's.
+    assertEquals(List.of(List.of("700 600", DOCUMENT), List.of("700 600", DOCUMENT)), fake.configs());
+    assertFalse(Files.exists(configDir), "the login outlives its pull: " + configDir);
+    // The run is not given it — the image is local by then — and the step keeps its env as sent.
+    List<String> run = calls.get(2);
+    assertEquals("run", run.get(0));
+    assertEquals(DOCUMENT, envValue(run, "QITS_CI_REGISTRY_AUTH_CONFIG"));
+  }
+
+  @Test
+  void aFailedPullUnderALoginRemovesItAndNeverEchoesIt() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("image-inspect", 1, "", "")
+            .answer(
+                "pull", 1, "", "unauthorized: authentication required (" + AUTH + ") " + DOCUMENT);
+    LaunchFailed failed =
+        assertInstanceOf(
+            LaunchFailed.class,
+            launcher(fake)
+                .launch(
+                    new Launch(
+                        "run-1",
+                        0,
+                        plainWithEnv(IMAGE, Map.of("QITS_CI_REGISTRY_AUTH_CONFIG", DOCUMENT)))));
+
+    assertTrue(failed.detail().contains("unauthorized: authentication required"), failed::detail);
+    assertTrue(failed.detail().contains(IMAGE), failed::detail);
+    assertFalse(failed.detail().contains(AUTH), failed::detail);
+    assertFalse(failed.detail().contains("auths"), failed::detail);
+    List<String> pull = fake.calls().get(1);
+    assertEquals(List.of("--config"), pull.subList(0, 1), () -> "pull: " + pull);
+    Path configDir = Path.of(pull.get(1));
+    assertFalse(Files.exists(configDir), "a failed pull strands no login: " + configDir);
+    assertEquals(0, fake.calls("run").size());
+  }
+
+  @Test
+  void aSpecWithNoRegistryLoginPullsUnderTheHostsConfigAsBefore() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("image-inspect", 1, "", "No such image")
+            .answer("run", 0, "cid\n", "");
+    assertInstanceOf(
+        Launched.class,
+        launcher(fake).launch(new Launch("run-1", 0, plainWithEnv(IMAGE, Map.of("CI", "true")))));
+
+    List<List<String>> calls = fake.calls();
+    assertTrue(calls.stream().noneMatch(c -> c.contains("--config")), () -> "calls: " + calls);
+    assertEquals(List.of("pull", IMAGE), fake.calls().get(1));
+    assertEquals(List.of(), fake.configs());
+  }
+
+  @Test
+  void aPlainStepWithNoNetworkNamedJoinsNoNetworkAndIsGivenNoExtraHost() throws Exception {
+    FakeDocker fake = new FakeDocker(dir).answer("run", 0, "cid\n", "");
+    launcher(fake).launch(new Launch("run-1", 0, plainWithEnv(IMAGE, Map.of())));
+    List<String> step = fake.calls("run").getFirst();
+    // Docker's default bridge: no qits-net, no runner build network, no platform name to resolve.
+    assertFalse(step.contains("--network"), () -> "step: " + step);
+    assertTrue(step.stream().noneMatch(a -> a.startsWith("--add-host")), () -> "step: " + step);
+  }
+
+  @Test
+  void theRedactionTakesOutTheDocumentAndEveryLoginInIt() {
+    assertEquals(
+        "no [redacted] and no [redacted]",
+        Launcher.redact("no " + DOCUMENT + " and no " + AUTH, DOCUMENT));
+    assertEquals("as is", Launcher.redact("as is", null));
+    assertEquals("not json", Launcher.redact("not json", "{broken"));
   }
 }

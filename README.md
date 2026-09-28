@@ -182,6 +182,15 @@ hash of the image, the toml, the start script and the CA bundle mounted into it 
 builder whose stamp differs from the configured one is removed and started again with the new
 configuration.
 
+**The step image is pulled under the launch's own login.** When a spec's environment carries
+`QITS_CI_REGISTRY_AUTH_CONFIG` — the docker `config.json` document qits-ci sends as the run's
+registry credential — the runner runs that launch's `docker image inspect` and `docker pull` as
+`docker --config <dir>`, where `<dir>` is a fresh 0700 directory holding the document as a 0600
+`config.json`, deleted as soon as the pull is over. The host's own docker config is never written,
+the document is never logged, and a failed pull's detail has it redacted. Without the key the pull
+runs under the host's config, as before. This is what lets an EDGE step's image come from the
+registry's public vhost, which answers an anonymous `/v2` with 401.
+
 ## Build steps
 
 A step's spec sends it down one of two paths, decided by qits-ci and never by the runner:
