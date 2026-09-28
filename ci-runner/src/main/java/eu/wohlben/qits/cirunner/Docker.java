@@ -29,6 +29,17 @@ public interface Docker {
   /** How much of each stream is kept. A pull's progress is long; its last line is the verdict. */
   int MAX_CAPTURE = 8192;
 
+  /**
+   * How much of stdout is kept for a caller reading a whole document — {@code docker inspect} with
+   * no {@code --format}, which answers a JSON array rather than a line. {@link #MAX_CAPTURE}'s ring
+   * buffer keeps the <em>tail</em>, right for a pull whose last line is the verdict; for a document a
+   * truncated tail is not a short answer, it is invalid JSON missing its opening {@code [{}, and the
+   * parser refuses it exactly the way a missing template key used to. Sized well past any container
+   * or image {@code docker inspect} this estate produces, so the truncation this exists to avoid
+   * stays theoretical rather than trading one failure for another.
+   */
+  int MAX_DOCUMENT = 1_048_576;
+
   /** One invocation's outcome. {@code timedOut} is its own flag so a kill is not a mystery exit. */
   record Result(int exitCode, String stdout, String stderr, boolean timedOut) {
     public boolean ok() {
@@ -43,6 +54,15 @@ public interface Docker {
   }
 
   Result run(List<String> argv);
+
+  /**
+   * {@link #run} with stdout capped at {@code maxCapture} instead of {@link #MAX_CAPTURE} — for
+   * {@link #MAX_DOCUMENT}, a whole-document answer. stderr keeps the default cap: docker's
+   * diagnosis is always a line, however big the document being asked for is.
+   */
+  default Result run(List<String> argv, int maxCapture) {
+    return run(argv);
+  }
 
   /**
    * {@link #run} with stderr folded into stdout as the process wrote them, keeping at most {@code
@@ -74,6 +94,11 @@ public interface Docker {
       @Override
       public Result run(List<String> argv) {
         return fork(argv, timeoutSeconds, pumps, false, MAX_CAPTURE);
+      }
+
+      @Override
+      public Result run(List<String> argv, int maxCapture) {
+        return fork(argv, timeoutSeconds, pumps, false, maxCapture);
       }
 
       @Override

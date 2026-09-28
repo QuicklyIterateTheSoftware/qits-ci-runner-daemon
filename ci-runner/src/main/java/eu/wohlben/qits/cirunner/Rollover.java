@@ -415,15 +415,19 @@ public final class Rollover {
 
   private Optional<String> startSuccessor(Upgrade upgrade) {
     String selfId = self.orElseThrow();
-    Docker.Result inspected = docker.run(RunnerArgv.inspectSelf(dockerBinary, selfId));
+    // MAX_DOCUMENT, not the default: this is a whole `docker inspect` document, not a line, and the
+    // default cap's ring buffer would keep the tail of it — invalid JSON missing its opening `[{`.
+    Docker.Result inspected =
+        docker.run(RunnerArgv.inspectSelf(dockerBinary, selfId), Docker.MAX_DOCUMENT);
     if (!inspected.ok()) {
       return Optional.of("could not inspect its own container: " + inspected.detail());
     }
     SelfSpec spec;
     List<String> argv;
     try {
-      String imageId = new JsonObject(inspected.stdout().strip()).getString("image", "");
-      Docker.Result image = docker.run(RunnerArgv.imageConfig(dockerBinary, imageId));
+      String imageId = SelfSpec.imageIdOf(inspected.stdout());
+      Docker.Result image =
+          docker.run(RunnerArgv.imageConfig(dockerBinary, imageId), Docker.MAX_DOCUMENT);
       if (!image.ok()) {
         return Optional.of("could not inspect its own image: " + image.detail());
       }

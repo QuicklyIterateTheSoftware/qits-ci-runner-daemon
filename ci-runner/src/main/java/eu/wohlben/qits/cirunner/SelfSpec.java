@@ -15,8 +15,21 @@ import java.util.Set;
  * record of what the person (or the previous rollover) actually ran, so a runner an operator started
  * with an extra variable or mount hands both on without anything here knowing about them.
  *
- * <p><b>The image's own contribution is subtracted.</b> {@code .Config.Env} and {@code
- * .Config.Labels} are the container's merged view: the image's {@code ENV}/{@code LABEL} lines plus
+ * <p><b>The whole document, parsed defensively, never a {@code --format} template.</b> {@link
+ * RunnerArgv#inspectSelf} and {@link RunnerArgv#imageConfig} run a bare {@code docker inspect} /
+ * {@code docker image inspect} — the full JSON array docker always answers, one element for the one
+ * id asked for — and every field below is read with docker's own capitalised spelling ({@code
+ * Config.Env}, {@code HostConfig.Mounts}, …) and a default for when it is missing. That default is
+ * the whole reason this class parses JSON instead of asking docker's {@code --format} to: a Go
+ * template there runs over the JSON re-parsed into a generic map, and a key the container's shape
+ * omits — {@code HostConfig.Mounts} is absent, not an empty array, on a container started with
+ * {@code -v} binds only — is a missing map key the template refuses to render at all. Every read
+ * here instead falls through {@link JsonObject#getJsonArray} / {@link JsonObject#getJsonObject},
+ * which answer {@code null} for an absent key exactly as readily as for one holding JSON {@code
+ * null}, so there is only ever one case to handle: empty.
+ *
+ * <p><b>The image's own contribution is subtracted.</b> {@code Config.Env} and {@code
+ * Config.Labels} are the container's merged view: the image's {@code ENV}/{@code LABEL} lines plus
  * what {@code docker run} added. Carrying the merge would pin the <em>old</em> image's {@code PATH}
  * or {@code DOCKER_VERSION} onto the new image, so an entry exactly equal to the old image's is
  * dropped and the new image brings its own.
@@ -41,35 +54,38 @@ public record SelfSpec(
   /**
    * Parse {@link RunnerArgv#inspectSelf}'s answer, subtracting {@link RunnerArgv#imageConfig}'s.
    *
-   * @throws IllegalArgumentException when either answer is not the JSON the templates produce
+   * @throws IllegalArgumentException when either answer is not the JSON array {@code docker
+   *     inspect} produces for exactly one id
    */
   public static SelfSpec parse(String containerJson, String imageJson) {
-    JsonObject container;
-    JsonObject image;
-    try {
-      container = new JsonObject(containerJson.strip());
-      image = new JsonObject(imageJson.strip());
-    } catch (RuntimeException e) {
-      throw new IllegalArgumentException("docker inspect did not answer JSON: " + e.getMessage());
-    }
-    Set<String> imageEnv = new LinkedHashSet<>(strings(image.getJsonArray("env")));
+    JsonObject container = firstObject(containerJson, "docker inspect");
+    JsonObject image = firstObject(imageJson, "docker image inspect");
+    JsonObject containerConfig = container.getJsonObject("Config");
+    JsonObject hostConfig = container.getJsonObject("HostConfig");
+    JsonObject imageConfig = image.getJsonObject("Config");
+
+    Set<String> imageEnv =
+        new LinkedHashSet<>(strings(imageConfig == null ? null : imageConfig.getJsonArray("Env")));
     Map<String, String> env = new LinkedHashMap<>();
-    for (String entry : strings(container.getJsonArray("env"))) {
+    for (String entry :
+        strings(containerConfig == null ? null : containerConfig.getJsonArray("Env"))) {
       int split = entry.indexOf('=');
       if (split <= 0 || imageEnv.contains(entry)) {
         continue;
       }
       env.put(entry.substring(0, split), entry.substring(split + 1));
     }
-    Map<String, String> imageLabels = labels(image.getJsonObject("labels"));
+    Map<String, String> imageLabels =
+        labels(imageConfig == null ? null : imageConfig.getJsonObject("Labels"));
     Map<String, String> labels = new LinkedHashMap<>();
-    for (Map.Entry<String, String> label : labels(container.getJsonObject("labels")).entrySet()) {
+    for (Map.Entry<String, String> label :
+        labels(containerConfig == null ? null : containerConfig.getJsonObject("Labels")).entrySet()) {
       if (!label.getValue().equals(imageLabels.get(label.getKey()))) {
         labels.put(label.getKey(), label.getValue());
       }
     }
     List<String> mounts = new ArrayList<>();
-    JsonArray declared = container.getJsonArray("mounts");
+    JsonArray declared = hostConfig == null ? null : hostConfig.getJsonArray("Mounts");
     if (declared != null) {
       for (Object item : declared) {
         if (item instanceof JsonObject mount) {
@@ -78,14 +94,40 @@ public record SelfSpec(
       }
     }
     return new SelfSpec(
-        container.getString("id", ""),
-        container.getString("image", ""),
+        container.getString("Id", ""),
+        container.getString("Image", ""),
         Map.copyOf(env),
         Map.copyOf(labels),
-        List.copyOf(strings(container.getJsonArray("binds"))),
+        List.copyOf(strings(hostConfig == null ? null : hostConfig.getJsonArray("Binds"))),
         List.copyOf(mounts),
-        restart(container.getJsonObject("restart")),
-        container.getString("network", ""));
+        restart(hostConfig == null ? null : hostConfig.getJsonObject("RestartPolicy")),
+        hostConfig == null ? "" : hostConfig.getString("NetworkMode", ""));
+  }
+
+  /**
+   * The image id {@link RunnerArgv#imageConfig} should be asked about — read out of {@link
+   * RunnerArgv#inspectSelf}'s own answer before {@link #parse} needs the image's answer too, since
+   * the image inspect the caller makes next depends on it.
+   */
+  static String imageIdOf(String containerJson) {
+    return firstObject(containerJson, "docker inspect").getString("Image", "");
+  }
+
+  /**
+   * The one element {@code docker inspect <id>} (or {@code docker image inspect <id>}) answers for a
+   * single id, as a JSON array — never {@code null}, never more than one entry.
+   */
+  private static JsonObject firstObject(String json, String what) {
+    JsonArray array;
+    try {
+      array = new JsonArray(json == null ? "" : json.strip());
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException(what + " did not answer JSON: " + e.getMessage());
+    }
+    if (array.isEmpty() || !(array.getValue(0) instanceof JsonObject object)) {
+      throw new IllegalArgumentException(what + " answered no object: " + json);
+    }
+    return object;
   }
 
   /**

@@ -27,6 +27,7 @@ import eu.wohlben.qits.cirunner.protocol.Take;
 import eu.wohlben.qits.cirunner.protocol.Upgrade;
 import eu.wohlben.qits.cirunner.protocol.WorkloadSpec;
 import io.vertx.core.Vertx;
+import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -430,38 +431,53 @@ class RunnerMainTest {
   /**
    * A fake docker that answers like the runner's own container: its inspect (what the install
    * script started), its old image's config, and the pulled image's digest.
+   *
+   * <p>Deliberately no {@code Mounts} key on the container at all — {@code HostConfig} carries
+   * {@code Binds} only, which is docker's real shape for a container started with {@code -v} and
+   * never {@code --mount}, and is exactly what broke the old {@code --format} template (qits-463):
+   * {@code docker inspect -f '{{.HostConfig.Mounts}}'} refuses to render a key that is not there,
+   * where reading the same document as JSON in Java answers an absent array as {@code null}.
    */
   private void runnerContainer() throws Exception {
     docker.answerFor(
         "inspect",
         SELF,
         0,
-        new JsonObject()
-                .put("id", SELF + "0".repeat(52))
-                .put("image", "sha256:old")
-                .put(
-                    "env",
-                    List.of(
-                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                        "DOCKER_VERSION=29.8.1",
-                        "QITS_CI_RUNNER_URL=https://ci.qits.example.eu",
-                        "QITS_CI_RUNNER_ID=r1",
-                        "QITS_CI_RUNNER_SLOTS=2",
-                        "QITS_CI_RUNNER_REGISTRATION_TOKEN=qits_tok_SPENT"))
-                .put(
-                    "labels",
-                    Map.of(
-                        "qits.ci.runner.process", "r1",
-                        "qits.ci.runner.version", CiRunnerBinary.VERSION,
-                        "org.opencontainers.image.version", "29.8.1"))
-                .put(
-                    "binds",
-                    List.of(
-                        "/var/run/docker.sock:/var/run/docker.sock",
-                        "qits-ci-runner-state-r1:/var/lib/qits-ci-runner"))
-                .putNull("mounts")
-                .put("restart", Map.of("Name", "unless-stopped", "MaximumRetryCount", 0))
-                .put("network", "default")
+        new JsonArray()
+                .add(
+                    new JsonObject()
+                        .put("Id", SELF + "0".repeat(52))
+                        .put("Image", "sha256:old")
+                        .put(
+                            "Config",
+                            new JsonObject()
+                                .put(
+                                    "Env",
+                                    List.of(
+                                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                                        "DOCKER_VERSION=29.8.1",
+                                        "QITS_CI_RUNNER_URL=https://ci.qits.example.eu",
+                                        "QITS_CI_RUNNER_ID=r1",
+                                        "QITS_CI_RUNNER_SLOTS=2",
+                                        "QITS_CI_RUNNER_REGISTRATION_TOKEN=qits_tok_SPENT"))
+                                .put(
+                                    "Labels",
+                                    Map.of(
+                                        "qits.ci.runner.process", "r1",
+                                        "qits.ci.runner.version", CiRunnerBinary.VERSION,
+                                        "org.opencontainers.image.version", "29.8.1")))
+                        .put(
+                            "HostConfig",
+                            new JsonObject()
+                                .put(
+                                    "Binds",
+                                    List.of(
+                                        "/var/run/docker.sock:/var/run/docker.sock",
+                                        "qits-ci-runner-state-r1:/var/lib/qits-ci-runner"))
+                                .put(
+                                    "RestartPolicy",
+                                    Map.of("Name", "unless-stopped", "MaximumRetryCount", 0))
+                                .put("NetworkMode", "default")))
                 .encode()
             + "\n",
         "");
@@ -469,13 +485,21 @@ class RunnerMainTest {
         "image-inspect",
         "sha256:old",
         0,
-        new JsonObject()
-                .put(
-                    "env",
-                    List.of(
-                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                        "DOCKER_VERSION=29.8.1"))
-                .put("labels", Map.of("org.opencontainers.image.version", "29.8.1"))
+        new JsonArray()
+                .add(
+                    new JsonObject()
+                        .put("Id", "sha256:old")
+                        .put(
+                            "Config",
+                            new JsonObject()
+                                .put(
+                                    "Env",
+                                    List.of(
+                                        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                                        "DOCKER_VERSION=29.8.1"))
+                                .put(
+                                    "Labels",
+                                    Map.of("org.opencontainers.image.version", "29.8.1"))))
                 .encode()
             + "\n",
         "");

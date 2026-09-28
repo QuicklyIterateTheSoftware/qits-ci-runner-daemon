@@ -56,21 +56,6 @@ public final class RunnerArgv {
   /** The one variable a successor is never given: the token was spent by the first start. */
   public static final String REGISTRATION_TOKEN_ENV = "QITS_CI_RUNNER_REGISTRATION_TOKEN";
 
-  /**
-   * {@code docker inspect}'s view of a runner container, narrowed by a template to exactly what a
-   * successor inherits. Narrowed rather than the whole document because {@link Docker} keeps only
-   * the tail of a stream, and a full inspect runs past that on any container with a few mounts.
-   */
-  static final String SELF_FORMAT =
-      "{\"id\":{{json .Id}},\"image\":{{json .Image}},\"env\":{{json .Config.Env}},"
-          + "\"labels\":{{json .Config.Labels}},\"binds\":{{json .HostConfig.Binds}},"
-          + "\"mounts\":{{json .HostConfig.Mounts}},\"restart\":{{json .HostConfig.RestartPolicy}},"
-          + "\"network\":{{json .HostConfig.NetworkMode}}}";
-
-  /** The image's own environment and labels, which a successor does not carry across. */
-  static final String IMAGE_CONFIG_FORMAT =
-      "{\"env\":{{json .Config.Env}},\"labels\":{{json .Config.Labels}}}";
-
   /** One line per runner container: id, version label and state. */
   static final String PROCESS_FORMAT = "{{.ID}}|{{.Label \"" + VERSION_LABEL + "\"}}|{{.State}}";
 
@@ -302,16 +287,27 @@ public final class RunnerArgv {
     return require(VERSION, "runner version", version);
   }
 
-  /** The runner's own container, narrowed to what a successor inherits — see {@link #SELF_FORMAT}. */
+  /**
+   * The runner's own container, whole — never {@code --format}. Docker's {@code --format} runs a Go
+   * template over the container's JSON parsed into a generic map, so a field a container's shape
+   * omits (the live case: {@code HostConfig.Mounts} is absent, not merely empty, when a container
+   * was started with {@code -v} binds only) is a missing map key, and the template refuses to render
+   * one at all rather than answer it empty. {@link SelfSpec#parse} reads this document field by
+   * field in Java instead, where an absent key is a {@code null} to default around, not a refusal.
+   * The answer is read under {@link Docker#MAX_DOCUMENT}: see there for why {@link Docker#MAX_CAPTURE}
+   * is the wrong bound for a document.
+   */
   public static List<String> inspectSelf(String dockerBinary, String containerId) {
-    return List.of(
-        dockerBinary, "inspect", "--format", SELF_FORMAT, require(NAME, "container id", containerId));
+    return List.of(dockerBinary, "inspect", require(NAME, "container id", containerId));
   }
 
-  /** The environment and labels an image brings by itself. */
+  /**
+   * The image the runner's own container was started from, whole — the same reason as {@link
+   * #inspectSelf}: {@link SelfSpec#parse} subtracts its {@code Config.Env}/{@code Config.Labels}
+   * from the container's own, and does so defensively rather than through a template.
+   */
   public static List<String> imageConfig(String dockerBinary, String image) {
-    return List.of(
-        dockerBinary, "image", "inspect", "--format", IMAGE_CONFIG_FORMAT, requireImage(image));
+    return List.of(dockerBinary, "image", "inspect", requireImage(image));
   }
 
   /** The registry digests a pulled image is known under — what an expected digest is checked in. */
