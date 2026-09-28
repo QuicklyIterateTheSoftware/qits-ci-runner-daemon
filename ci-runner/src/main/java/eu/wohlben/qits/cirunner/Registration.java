@@ -29,7 +29,7 @@ import org.jboss.logging.Logger;
  *
  * <p><b>Rotation is a new token, and a new token re-registers.</b> The file records a SHA-256 of the
  * token that produced it. On a start where the environment carries a token whose hash differs, the
- * operator pasted a fresh install script (the CI UI's "replace registration token"), and the runner
+ * operator pasted a fresh install line (the CI UI's "replace registration token"), and the runner
  * registers with it and replaces the file; the same token as before is the same env file after a
  * reboot, and changes nothing. That is what lets the install script rewrite only the env file and
  * restart the unit, with no knowledge of the state directory.

@@ -24,12 +24,30 @@ the runner only starts the containers it is told to start and removes the ones i
 
 1. In the CI UI, open **Runners**, create a runner (or pick an existing one) and open its install
    panel.
-2. **Copy the script** the panel shows and **paste it into a root shell** on the machine.
+2. **Copy the one line** the panel shows and **paste it into a shell** on the machine. It looks like
 
-That is the whole install. The script downloads the `qits-ci-runner` binary to
-`/usr/local/bin/qits-ci-runner`, creates the system user `qits-ci-runner` in the `docker` group,
-writes `/etc/qits-ci-runner.env` (mode 0600 — it holds the one-time registration token), writes the
-`qits-ci-runner` systemd unit, and starts it.
+       curl -fsSL -H 'Authorization: Bearer qits_tok_…' https://ci.qits.<domain>/ci/api/runners/install.sh | sudo env QITS_CI_RUNNER_URL='https://ci.qits.<domain>' QITS_CI_RUNNER_ID='<id>' QITS_CI_RUNNER_REGISTRATION_TOKEN='qits_tok_…' QITS_CI_RUNNER_SLOTS='<n>' sh
+
+That is the whole install, and everything in it goes through the platform's **public edge** — the
+same `https://…qits.<domain>` names a browser uses; nothing on the machine needs the platform's
+internal network or DNS. `curl` fetches the generic install script with the runner's one-time
+registration token, and `sudo … sh` runs it as root with this runner's four values in its
+environment. The script carries no secret of its own and names no runner; the token is in the line
+twice (the fetch's bearer and the script's value) and treat the line as a secret until the runner has
+registered. Because the script runs in a `sh` of its own, a refusal ends that process and never the
+shell you pasted into. (Already root, on a host with no `sudo`? Delete the word `sudo` from the line;
+`env … sh` does the rest.)
+
+The script refuses, one sentence each, when a value is missing, when it is not root, or when
+`docker` is not on `PATH`. Otherwise it downloads the `qits-ci-runner` binary from the platform's
+artifact store (`https://registry.qits.<domain>/artifacts/daemons/qits-ci-runner/<version>`, with the
+same token) to `/usr/local/bin/qits-ci-runner`, creates the system user `qits-ci-runner` in the
+`docker` group, writes `/etc/qits-ci-runner.env` (mode 0600 — it holds the registration token),
+writes the `qits-ci-runner` systemd unit, starts it, and prints
+
+    qits-ci-runner installed; watch: journalctl -fu qits-ci-runner
+
+and never the token.
 
 ### What a good first start looks like
 
@@ -42,17 +60,21 @@ shows, within a few seconds:
 
 `registered` appears once, on the very first start: the runner exchanged its registration token for
 its own credentials and stored them in `/var/lib/qits-ci-runner/client.json` (mode 0600). The token is
-never used again. `connected slots=2` appears on every connection, with the number of runs the CI
+never used again. From then on the runner mints its access token at the idp's public token endpoint
+(`https://idp.qits.<domain>/idp/token`, `client_credentials` with its id and secret in the form body
+— the edge would take an HTTP Basic header for its own) and dials `wss://ci.qits.<domain>/ci/runners/socket`;
+both addresses come from the registration answer. `connected slots=2` appears on every connection, with the number of runs the CI
 lets this runner hold at once — the CI's setting for the runner wins over the `QITS_CI_RUNNER_SLOTS`
 the machine advertises. After that you will see `took run …`, `launched run … step …` and `released
 run …` as work arrives.
 
 ### Rotating the registration
 
-In the CI UI, **Replace registration token** on the runner, then paste the new install script into a
-root shell exactly as the first time. It finds the binary already installed and keeps it, rewrites
-only `/etc/qits-ci-runner.env` with the new token, and restarts the unit; the runner sees a token it
-has not registered with and registers again, replacing its stored credentials.
+In the CI UI, **Replace registration token** on the runner, then paste the **new line** into a shell
+exactly as the first time. The script finds the binary already installed and keeps it, rewrites only
+`/etc/qits-ci-runner.env` with the new token, and restarts the unit; the runner sees a token it has
+not registered with and registers again, replacing its stored credentials. The old line stops
+working: its token is deleted when the new one is minted.
 
 ### Removing a runner
 
@@ -65,12 +87,13 @@ never connect again. To clean the machine as well, remove `/usr/local/bin/qits-c
 
 ### Environment
 
-The install script writes the first five into `/etc/qits-ci-runner.env`. The rest are for an operator
+The install script writes the first five into `/etc/qits-ci-runner.env` (four from the install
+line, and the state directory). The rest are for an operator
 with a reason.
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `QITS_CI_RUNNER_URL` | The CI service's base url, e.g. `https://ci.dev.example.eu` or `http://dev-qits-ci:8080`. | required |
+| `QITS_CI_RUNNER_URL` | The CI service's base url — its public edge name, e.g. `https://ci.qits.example.eu`. | required |
 | `QITS_CI_RUNNER_ID` | The runner id the CI minted for this runner. | required |
 | `QITS_CI_RUNNER_REGISTRATION_TOKEN` | One-time registration token. Needed only until registered; a *different* token later means "register again". | required until registered |
 | `QITS_CI_RUNNER_STATE_DIR` | Where `client.json` lives. | `/var/lib/qits-ci-runner` |
@@ -101,7 +124,7 @@ A healthy runner never exits; systemd restarts it after any of these (`RestartSe
 | 2 | A variable is missing or unparseable (the journal line names it), or the runner is not registered and has no token. | Fix `/etc/qits-ci-runner.env`. |
 | 3 | Registration could not reach the CI, or it answered 5xx. | Nothing — the restart is the retry. |
 | 4 | The CI speaks a protocol version this binary does not. | Install the binary the CI's current install script names. |
-| 5 | The CI refused the registration (4xx); its answer is quoted in the journal. | Replace the registration token in the UI and paste the new script. |
+| 5 | The CI refused the registration (4xx); its answer is quoted in the journal. | Replace the registration token in the UI and paste the new line. |
 | 6 | The state directory is unreadable, or `client.json` is not a usable client. | Delete `client.json` and start again with a fresh registration token. |
 
 ## Layout
@@ -158,9 +181,17 @@ configured one is removed and started again with the new configuration.
 
 ## The install-script contract
 
-qits-ci-service renders the install script from `service/src/main/resources/runner-install.sh.tmpl`.
-For `scripts/test-install-contract.sh` to run a rendering of it offline, the template must honour:
+qits-ci-service renders the generic install script from
+`service/src/main/resources/runner-install.sh.tmpl` — filling in only its public artifacts base and the
+pinned runner version — and serves it at `GET /ci/api/runners/install.sh`, readable with a
+registration token. `scripts/fixtures/runner-install.sh` is one such rendering (qits-ci's
+`RunnerInstallScriptTest` writes it to `service/target/runner-install.fixture.sh`), and
+`scripts/test-install-contract.sh` runs it offline the way the install line does — on stdin, with
+the four values in its environment. The template must honour:
 
+0. It carries no token and names no runner: `QITS_CI_RUNNER_URL`, `QITS_CI_RUNNER_ID`,
+   `QITS_CI_RUNNER_REGISTRATION_TOKEN` and `QITS_CI_RUNNER_SLOTS` come from its environment, and one
+   missing is a refusal naming it, before anything is written.
 1. Every absolute path the script writes is prefixed with `${QITS_INSTALL_ROOT:-}`: the binary at
    `$ROOT/usr/local/bin/qits-ci-runner`, the env file at `$ROOT/etc/qits-ci-runner.env`, the unit at
    `$ROOT/etc/systemd/system/qits-ci-runner.service`.

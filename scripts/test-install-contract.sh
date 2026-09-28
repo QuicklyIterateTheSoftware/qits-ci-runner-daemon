@@ -2,11 +2,18 @@
 # Offline test of the runner install script qits-ci renders, against stubs, in a temp root.
 #
 # It runs scripts/fixtures/runner-install.sh — a copy of one rendering of qits-ci-service's
-# service/src/main/resources/runner-install.sh.tmpl — twice: a first install, then a rotation (the
-# same script with a new registration token, which is what the CI UI's "replace registration token"
-# hands out). Nothing it runs reaches a network, a real docker, a real systemd or the real /etc.
+# service/src/main/resources/runner-install.sh.tmpl, the GENERIC script `GET
+# /ci/api/runners/install.sh` serves — the way the CI UI's one install line runs it: piped into `sh`
+# with the four per-runner values in its environment. Twice: a first install, then a rotation (the
+# same script with a new registration token in the environment, which is what the line the CI UI's
+# "replace registration token" hands out does). Nothing it runs reaches a network, a real docker, a
+# real systemd or the real /etc.
 #
 # THE CONTRACT the template must honour, so this test can run it:
+#
+#   0. It carries no secret and names no runner: QITS_CI_RUNNER_URL, QITS_CI_RUNNER_ID,
+#      QITS_CI_RUNNER_REGISTRATION_TOKEN and QITS_CI_RUNNER_SLOTS come from its environment, and
+#      one missing is a refusal (nonzero, naming it) before anything is written.
 #
 #   1. Every absolute path the script writes is prefixed with "${QITS_INSTALL_ROOT:-}" — the binary
 #      at $ROOT/usr/local/bin/qits-ci-runner, the env file at $ROOT/etc/qits-ci-runner.env, the unit
@@ -104,8 +111,19 @@ STUB
 
 chmod +x "$STUBS"/*
 
-run_install() { # $1 = script, $2 = log name
-  if ! PATH="$STUBS:$PATH" QITS_INSTALL_ROOT="$ROOT" sh "$1" > "$WORK/output-$2.log" 2>&1; then
+URL_VALUE="https://ci.qits.example.org"
+ID_VALUE="00000000-0000-0000-0000-000000000001"
+TOKEN="qits_tok_CONTRACT-$$-DO-NOT-PRINT"
+SLOTS_VALUE=2
+
+# As the install line runs it: `curl … | sudo env <the four values> sh` — the script on stdin.
+run_install() { # $1 = token, $2 = log name
+  if ! PATH="$STUBS:$PATH" QITS_INSTALL_ROOT="$ROOT" env \
+      QITS_CI_RUNNER_URL="$URL_VALUE" \
+      QITS_CI_RUNNER_ID="$ID_VALUE" \
+      QITS_CI_RUNNER_REGISTRATION_TOKEN="$1" \
+      QITS_CI_RUNNER_SLOTS="$SLOTS_VALUE" \
+      sh < "$FIXTURE" > "$WORK/output-$2.log" 2>&1; then
     fail "the install script exited nonzero ($2)"
   fi
 }
@@ -121,7 +139,24 @@ mode_of() {
 # ---- first install ------------------------------------------------------------------------------
 
 sh -n "$FIXTURE" || fail "the fixture does not parse"
-run_install "$FIXTURE" first
+grep -q 'qits_tok_' "$FIXTURE" && fail "the generic script carries a token"
+grep -q '{{' "$FIXTURE" && fail "the generic script has a placeholder nothing filled"
+
+# ---- a missing value is refused, by name, before anything is written ---------------------------
+
+if PATH="$STUBS:$PATH" QITS_INSTALL_ROOT="$ROOT" env -u QITS_CI_RUNNER_ID \
+    QITS_CI_RUNNER_URL="$URL_VALUE" QITS_CI_RUNNER_REGISTRATION_TOKEN="$TOKEN" \
+    QITS_CI_RUNNER_SLOTS="$SLOTS_VALUE" sh < "$FIXTURE" > "$WORK/output-missing.log" 2>&1; then
+  fail "the install script ran with QITS_CI_RUNNER_ID unset"
+fi
+grep -q 'QITS_CI_RUNNER_ID is not set' "$WORK/output-missing.log" || fail "the refusal does not name QITS_CI_RUNNER_ID"
+[ -z "$(ls -A "$ROOT")" ] || fail "a refused install wrote under QITS_INSTALL_ROOT"
+[ ! -s "$CALLS" ] || fail "a refused install ran a tool"
+rm -f "$WORK/output-missing.log"
+
+# ---- first install ------------------------------------------------------------------------------
+
+run_install "$TOKEN" first
 
 BIN="$ROOT/usr/local/bin/qits-ci-runner"
 [ -x "$BIN" ] || fail "the binary is not executable at <root>/usr/local/bin/qits-ci-runner"
@@ -136,10 +171,12 @@ EXPECTED="QITS_CI_RUNNER_ID QITS_CI_RUNNER_REGISTRATION_TOKEN QITS_CI_RUNNER_SLO
 [ "$KEYS" = "$EXPECTED" ] || fail "the env file carries [$KEYS], expected exactly [$EXPECTED]"
 LINES=$(grep -cv '^[[:space:]]*$' "$ENVFILE")
 [ "$LINES" = 5 ] || fail "the env file has $LINES non-empty lines, expected 5"
-for key in QITS_CI_RUNNER_URL QITS_CI_RUNNER_ID QITS_CI_RUNNER_REGISTRATION_TOKEN QITS_CI_RUNNER_STATE_DIR QITS_CI_RUNNER_SLOTS; do
-  [ -n "$(env_value "$key")" ] || fail "$key is empty in the env file"
-done
-TOKEN=$(env_value QITS_CI_RUNNER_REGISTRATION_TOKEN)
+[ "$(env_value QITS_CI_RUNNER_URL)" = "$URL_VALUE" ] || fail "QITS_CI_RUNNER_URL is not the value it was given"
+[ "$(env_value QITS_CI_RUNNER_ID)" = "$ID_VALUE" ] || fail "QITS_CI_RUNNER_ID is not the value it was given"
+[ "$(env_value QITS_CI_RUNNER_REGISTRATION_TOKEN)" = "$TOKEN" ] || fail "QITS_CI_RUNNER_REGISTRATION_TOKEN is not the value it was given"
+[ "$(env_value QITS_CI_RUNNER_STATE_DIR)" = "/var/lib/qits-ci-runner" ] || fail "QITS_CI_RUNNER_STATE_DIR is not /var/lib/qits-ci-runner"
+[ "$(env_value QITS_CI_RUNNER_SLOTS)" = "$SLOTS_VALUE" ] || fail "QITS_CI_RUNNER_SLOTS is not the value it was given"
+grep -q "^curl .*Authorization: Bearer $TOKEN" "$CALLS" || fail "the binary was not downloaded with the registration token as its bearer"
 
 UNIT_OUT="$ROOT/etc/systemd/system/qits-ci-runner.service"
 [ -f "$UNIT_OUT" ] || fail "no unit at <root>/etc/systemd/system/qits-ci-runner.service"
@@ -155,13 +192,11 @@ grep -qF -- "$TOKEN" "$WORK/output-first.log" && fail "the registration token ap
 # The root prefix held: nothing escaped to the real filesystem's view of $ROOT's siblings.
 [ ! -e "$WORK/usr" ] && [ ! -e "$WORK/etc" ] || fail "something was written outside QITS_INSTALL_ROOT"
 
-# ---- rotation: the same script with a new token --------------------------------------------------
+# ---- rotation: the same script, a new token in its environment -----------------------------------
 
-NEW_TOKEN="qits-reg-ROTATED-$$-DO-NOT-PRINT"
-sed "s|$TOKEN|$NEW_TOKEN|g" "$FIXTURE" > "$WORK/rotated.sh"
-grep -qF -- "$NEW_TOKEN" "$WORK/rotated.sh" || fail "could not derive a rotated script from the fixture"
+NEW_TOKEN="qits_tok_ROTATED-$$-DO-NOT-PRINT"
 : > "$CALLS"
-run_install "$WORK/rotated.sh" rotation
+run_install "$NEW_TOKEN" rotation
 
 grep -q '^curl ' "$CALLS" && fail "a rotation downloaded the binary again instead of keeping it"
 [ "$(env_value QITS_CI_RUNNER_REGISTRATION_TOKEN)" = "$NEW_TOKEN" ] || fail "the env file does not carry the new token"
@@ -170,4 +205,4 @@ grep -qx 'systemctl restart qits-ci-runner' "$CALLS" || fail "a rotation did not
 grep -qF -- "$NEW_TOKEN" "$WORK/output-rotation.log" && fail "the new token appeared in the output"
 grep -q '^useradd' "$CALLS" && fail "a rotation tried to create the user again"
 
-echo "PASS: install contract — binary, env file (0600, five keys), unit, systemctl, rotation, no token printed."
+echo "PASS: install contract — values from the environment, binary, env file (0600, five keys), unit, systemctl, rotation, no token printed."
