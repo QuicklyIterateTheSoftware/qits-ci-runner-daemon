@@ -8,11 +8,12 @@ package eu.wohlben.qits.cirunner.protocol;
  * {@link Nothing}, so the runner finishes the runs it already holds and takes no more.
  *
  * <p>A runner is a container on its host, and becoming another version is becoming another
- * container. The runner pulls {@code image} with the bearer it dials with as its registry login,
- * checks the pulled image's digest against {@code sha256} when the host sent one (null when it did
- * not), and — once it holds no run — starts a successor container from it with its own parameters.
- * The new process connects and says {@code Hello} in the pinned version; qits-ci then hands it the
- * slots and sends this one {@link Retire}.
+ * container. The runner pulls {@code image} with its own commissioned client pair as its registry
+ * login — the same {@code clientId}/{@code secret} it dials the control socket with, not the
+ * short-lived bearer that pair mints — checks the pulled image's digest against {@code sha256} when
+ * the host sent one (null when it did not), and — once it holds no run — starts a successor
+ * container from it with its own parameters. The new process connects and says {@code Hello} in the
+ * pinned version; qits-ci then hands it the slots and sends this one {@link Retire}.
  *
  * <p><b>THE WIRE SHAPE IS FROZEN</b>, and so is {@link Retire}'s and {@code Hello.runnerVersion}'s:
  * the type {@code "upgrade"} and the fields {@code version}, {@code image} and {@code sha256}, each a
@@ -26,8 +27,8 @@ package eu.wohlben.qits.cirunner.protocol;
  *     {@code qits.ci.runner.version} label, so the runner refuses anything outside a plain version
  *     charset.
  * @param image the full image reference to pull — {@code <registry host>/qits/qits-ci-runner:<version>},
- *     possibly pinned with an {@code @sha256:} digest. Its registry host is where the bearer is
- *     presented.
+ *     possibly pinned with an {@code @sha256:} digest. Its registry host is where the runner's own
+ *     client pair is presented.
  * @param sha256 the expected image digest (lowercase hex, with or without the {@code sha256:}
  *     prefix), or null when the host has none to offer.
  */

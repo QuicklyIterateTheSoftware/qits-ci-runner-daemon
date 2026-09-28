@@ -105,8 +105,10 @@ shows
 In order:
 
 1. **Drain.** The old runner takes no new run from the moment it is told; the runs it holds finish.
-2. **Pull.** It pulls the new image under its own access token as the registry login (a throwaway
-   `docker --config` again) and checks the image digest when the CI sent one.
+2. **Pull.** It pulls the new image under its own commissioned client pair (`client.json`'s
+   `clientId`/`secret`, not its short-lived access token — the edge's docker realm accepts a client
+   secret or an opaque `qits_tok_…` as the Basic password, never a JWT) as the registry login (a
+   throwaway `docker --config` again) and checks the image digest when the CI sent one.
 3. **Start the successor** once it holds no run: a new container, `qits-ci-runner-<id8>-<new>`, with
    the old one's parameters read from `docker inspect` of itself — its environment (minus the spent
    registration token), mounts, restart policy and network — and the new image and version label.

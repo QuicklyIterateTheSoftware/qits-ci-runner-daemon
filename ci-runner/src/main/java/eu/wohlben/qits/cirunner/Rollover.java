@@ -2,7 +2,6 @@ package eu.wohlben.qits.cirunner;
 
 import eu.wohlben.qits.cirunner.protocol.Retire;
 import eu.wohlben.qits.cirunner.protocol.Upgrade;
-import io.vertx.core.Future;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import java.io.IOException;
@@ -18,7 +17,6 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.IntSupplier;
-import java.util.function.Supplier;
 import org.jboss.logging.Logger;
 
 /**
@@ -58,22 +56,21 @@ public final class Rollover {
       long maxRetryMillis,
       long successorTimeoutMillis,
       long predecessorWaitMillis,
-      long pollMillis,
-      long bearerTimeoutMillis) {
+      long pollMillis) {
 
     /** 30 s doubling to 10 min; the watch as configured; a minute for a predecessor to leave. */
     public static Settings defaults(long successorTimeoutSeconds) {
-      return new Settings(30_000, 600_000, successorTimeoutSeconds * 1000, 60_000, 1_000, 30_000);
+      return new Settings(30_000, 600_000, successorTimeoutSeconds * 1000, 60_000, 1_000);
     }
   }
 
   /**
-   * Built by {@link RunnerMain} once it has a bearer — the registry login is the runner's own access
-   * token — and knows its slot state.
+   * Built by {@link RunnerMain} once it has registered — the registry login is the runner's own
+   * commissioned client pair — and knows its slot state.
    */
   @FunctionalInterface
   public interface Factory {
-    Rollover create(Supplier<Future<String>> bearer, IntSupplier held);
+    Rollover create(ClientCredentials client, IntSupplier held);
   }
 
   private final Docker docker;
@@ -82,7 +79,7 @@ public final class Rollover {
   private final String ownVersion;
   private final Optional<String> self;
   private final Settings settings;
-  private final Supplier<Future<String>> bearer;
+  private final ClientCredentials client;
   private final IntSupplier held;
   private final AtomicBoolean predecessorsSwept = new AtomicBoolean();
 
@@ -108,7 +105,7 @@ public final class Rollover {
       String ownVersion,
       Optional<String> self,
       Settings settings,
-      Supplier<Future<String>> bearer,
+      ClientCredentials client,
       IntSupplier held) {
     this.docker = docker;
     this.dockerBinary = dockerBinary;
@@ -116,7 +113,7 @@ public final class Rollover {
     this.ownVersion = ownVersion;
     this.self = self;
     this.settings = settings;
-    this.bearer = bearer;
+    this.client = client;
     this.held = held;
   }
 
@@ -341,28 +338,21 @@ public final class Rollover {
    *
    * <p><b>The login is a throwaway {@code docker --config} directory</b>, the same arrangement as a
    * launch's pull (see {@link Launcher}): {@code auths[<registry host>].auth} is {@code
-   * base64("token:" + bearer)}, the directory 0700 and the file 0600 from creation, deleted in the
-   * {@code finally}. The host's docker config is never written, the bearer is never logged, and a
-   * failure's detail has both it and its base64 taken out.
+   * base64(clientId + ":" + secret)}, the directory 0700 and the file 0600 from creation, deleted
+   * in the {@code finally}. This is the runner's own commissioned client pair from {@code
+   * client.json} — a {@code client_id}/{@code client_secret} the edge's docker realm spends at the
+   * idp with {@code client_credentials} — never the short-lived JWT {@link Bearer} mints for the
+   * control socket: that JWT is a bearer token, and the realm's Basic password slot only accepts a
+   * client secret or an opaque {@code qits_tok_…}, so a JWT there is spent as if it were a client
+   * secret and refused ("the identity provider refused these credentials"). The host's docker config
+   * is never written, the secret is never logged, and a failure's detail has both it and its base64
+   * taken out.
    */
   Optional<String> pull(Upgrade upgrade) {
-    String token;
-    try {
-      token =
-          bearer
-              .get()
-              .toCompletionStage()
-              .toCompletableFuture()
-              .get(settings.bearerTimeoutMillis(), TimeUnit.MILLISECONDS);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      return Optional.of("interrupted while minting its registry login");
-    } catch (Exception e) {
-      Throwable cause = e.getCause() != null ? e.getCause() : e;
-      return Optional.of("could not mint its registry login: " + cause.getMessage());
-    }
     String auth =
-        Base64.getEncoder().encodeToString(("token:" + token).getBytes(StandardCharsets.UTF_8));
+        Base64.getEncoder()
+            .encodeToString(
+                (client.clientId() + ":" + client.secret()).getBytes(StandardCharsets.UTF_8));
     String document =
         new JsonObject()
             .put(
@@ -385,7 +375,10 @@ public final class Rollover {
             "docker pull "
                 + upgrade.image()
                 + " failed: "
-                + pulled.detail().replace(token, "[redacted]").replace(auth, "[redacted]"));
+                + pulled
+                    .detail()
+                    .replace(client.secret(), "[redacted]")
+                    .replace(auth, "[redacted]"));
       }
     } finally {
       Launcher.removeConfig(configDir);

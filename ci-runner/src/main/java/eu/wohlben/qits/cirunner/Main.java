@@ -182,7 +182,7 @@ public class Main {
                   new Reaper(docker, env.dockerBinary(), env.runnerId()),
                   capabilities,
                   client -> new Bearer(http, client, System::currentTimeMillis),
-                  (bearer, held) ->
+                  (client, held) ->
                       new Rollover(
                           docker,
                           env.dockerBinary(),
@@ -190,7 +190,7 @@ public class Main {
                           CiRunnerBinary.VERSION,
                           self,
                           Rollover.Settings.defaults(env.rolloverTimeoutSeconds()),
-                          bearer,
+                          client,
                           held),
                   telemetry));
       return runner.run();

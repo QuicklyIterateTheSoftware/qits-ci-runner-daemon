@@ -119,7 +119,7 @@ public final class RunnerMain implements ControlSocket.Listener {
     Bearer bearer = parts.bearer().apply(client);
     // The log export needs the bearer, so it begins here; what was logged before waited for it.
     parts.telemetry().start(bearer::token);
-    rollover = parts.rollover().create(bearer::token, reservations::held);
+    rollover = parts.rollover().create(client, reservations::held);
     socket =
         new ControlSocket(
             vertx, client.socketUrl(), bearer::token, parts.settings().apply(client), this);

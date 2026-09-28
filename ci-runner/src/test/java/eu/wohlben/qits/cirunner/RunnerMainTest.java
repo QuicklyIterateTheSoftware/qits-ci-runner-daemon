@@ -64,7 +64,7 @@ class RunnerMainTest {
 
   private Optional<String> self = Optional.of(SELF);
   private Telemetry telemetry = Telemetry.off();
-  private Rollover.Settings rolloverSettings = new Rollover.Settings(100, 400, 3_000, 3_000, 50, 5_000);
+  private Rollover.Settings rolloverSettings = new Rollover.Settings(100, 400, 3_000, 3_000, 50);
 
   @BeforeEach
   void setUp() throws Exception {
@@ -99,7 +99,7 @@ class RunnerMainTest {
                 new Reaper(d, docker.binary, "r1"),
                 CAPS,
                 client -> new Bearer(http, client, System::currentTimeMillis),
-                (bearer, held) ->
+                (client, held) ->
                     new Rollover(
                         d,
                         docker.binary,
@@ -107,7 +107,7 @@ class RunnerMainTest {
                         CiRunnerBinary.VERSION,
                         self,
                         rolloverSettings,
-                        bearer,
+                        client,
                         held),
                 telemetry));
     exit = CompletableFuture.supplyAsync(runner::run);
@@ -493,7 +493,7 @@ class RunnerMainTest {
   }
 
   @Test
-  void theUpgradePullRunsUnderAThrowawayLoginMadeOfTheRunnersOwnBearer() throws Exception {
+  void theUpgradePullRunsUnderAThrowawayLoginMadeOfTheRunnersOwnClientPair() throws Exception {
     runnerContainer();
     ackWith(2, 0);
     start("t", 10_000);
@@ -511,7 +511,8 @@ class RunnerMainTest {
     assertEquals("700 600", config.get(0), "directory 0700, config.json 0600");
     String auth =
         Base64.getEncoder()
-            .encodeToString("token:runner-access-token".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            .encodeToString(
+                "ci-runner-r1:client-secret".getBytes(java.nio.charset.StandardCharsets.UTF_8));
     assertEquals(
         new JsonObject()
             .put("auths", new JsonObject().put("registry.example:5000", new JsonObject().put("auth", auth))),
@@ -519,6 +520,9 @@ class RunnerMainTest {
     assertTrue(
         docker.calls().stream().flatMap(List::stream).noneMatch(a -> a.contains("runner-access-token")),
         "the bearer is in no argv");
+    assertTrue(
+        docker.calls().stream().flatMap(List::stream).noneMatch(a -> a.contains("client-secret")),
+        "the client secret is in no argv");
   }
 
   @Test
@@ -558,7 +562,7 @@ class RunnerMainTest {
   @Test
   void aSuccessorThatDoesNotTakeOverIsRemovedAndTheRunnerStaysDrainingAndRetries()
       throws Exception {
-    rolloverSettings = new Rollover.Settings(100, 400, 300, 3_000, 50, 5_000);
+    rolloverSettings = new Rollover.Settings(100, 400, 300, 3_000, 50);
     runnerContainer();
     ackWith(2, 0);
     start("t", 10_000);
@@ -606,7 +610,7 @@ class RunnerMainTest {
 
   @Test
   void theFirstAckRemovesExitedAndLingeringPredecessorsAndNeverItself() throws Exception {
-    rolloverSettings = new Rollover.Settings(100, 400, 3_000, 400, 50, 5_000);
+    rolloverSettings = new Rollover.Settings(100, 400, 3_000, 400, 50);
     docker.answerFor(
         "ps",
         "label=qits.ci.runner.process=r1",
