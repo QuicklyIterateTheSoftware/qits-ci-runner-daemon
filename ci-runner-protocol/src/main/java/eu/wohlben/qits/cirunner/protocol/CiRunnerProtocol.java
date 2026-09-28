@@ -81,6 +81,7 @@ public final class CiRunnerProtocol {
     public static final String CAPABILITIES = "capabilities";
     public static final String SLOTS = "slots";
     public static final String QUEUED = "queued";
+    public static final String REGISTRY_MIRRORS = "registryMirrors";
     public static final String RUN_ID = "runId";
     public static final String REPO_NAME = "repoName";
     public static final String BRANCH = "branch";

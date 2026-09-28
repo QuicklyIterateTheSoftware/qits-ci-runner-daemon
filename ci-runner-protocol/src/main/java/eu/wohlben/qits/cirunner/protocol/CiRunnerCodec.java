@@ -67,6 +67,9 @@ public final class CiRunnerCodec {
         map.put(Field.TYPE, Type.ACK);
         map.put(Field.CAPABILITY_VERSION, m.capabilityVersion());
         map.put(Field.SLOTS, m.slots());
+        map.put(
+            Field.REGISTRY_MIRRORS,
+            m.registryMirrors() == null ? null : new LinkedHashMap<>(m.registryMirrors()));
       }
       case Backlog m -> {
         map.put(Field.TYPE, Type.BACKLOG);
@@ -156,7 +159,11 @@ public final class CiRunnerCodec {
             new Reaped(
                 str(map, Field.RUN_ID), intVal(map, Field.STEP_INDEX), str(map, Field.LOG_TAIL));
         case Type.HEARTBEAT -> new Heartbeat();
-        case Type.ACK -> new Ack(intVal(map, Field.CAPABILITY_VERSION), intVal(map, Field.SLOTS));
+        case Type.ACK ->
+            new Ack(
+                intVal(map, Field.CAPABILITY_VERSION),
+                intVal(map, Field.SLOTS),
+                nullableStringMap(map, Field.REGISTRY_MIRRORS));
         case Type.BACKLOG -> new Backlog(intVal(map, Field.QUEUED));
         case Type.TAKE ->
             new Take(
@@ -341,6 +348,20 @@ public final class CiRunnerCodec {
     Map<String, Object> nested = object(map, key);
     if (nested == null) {
       return Map.of();
+    }
+    Map<String, String> strings = new LinkedHashMap<>();
+    nested.forEach((k, v) -> strings.put(k, v == null ? "" : v.toString()));
+    return strings;
+  }
+
+  /**
+   * Like {@link #stringMap}, but absent stays {@code null} rather than collapsing to empty — {@link
+   * Ack#registryMirrors()}'s "nobody has sent one yet" is not the same thing as "sent, and empty".
+   */
+  private static Map<String, String> nullableStringMap(Map<String, Object> map, String key) {
+    Map<String, Object> nested = object(map, key);
+    if (nested == null) {
+      return null;
     }
     Map<String, String> strings = new LinkedHashMap<>();
     nested.forEach((k, v) -> strings.put(k, v == null ? "" : v.toString()));

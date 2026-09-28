@@ -62,6 +62,13 @@ class CiRunnerCodecTest {
             new Reaped("run-1", 2, "[container exited 1]\nerror: no route to ci\n"),
             new Heartbeat(),
             new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 3),
+            new Ack(
+                CiRunnerProtocol.CAPABILITY_VERSION,
+                3,
+                Map.of(
+                    "mirror.dev.localhost:8080", "mirror.qits.wohlben.eu",
+                    "registry.dev.localhost:8080", "registry.qits.wohlben.eu")),
+            new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 3, Map.of()),
             new Backlog(7),
             new Take("run-1", "qits-ci-service", "main", "0123456789abcdef"),
             new Nothing(),
@@ -155,6 +162,32 @@ class CiRunnerCodecTest {
         Map.of("type", "reinstated", "by", "admin"),
         CiRunnerCodec.encode(new Reinstated("admin")));
     assertEquals(new Reinstated("admin"), CiRunnerCodec.decode(Map.of("type", "reinstated", "by", "admin")));
+  }
+
+  /**
+   * An {@code Ack} from before qits-ci sent registry mirrors at all carries no such key, and that is
+   * not the same as "sent, empty": both this repo's {@link #nullableStringMap} decoder and the
+   * runner's merge logic (see {@code BuildPlane.withAckMirrors}) treat absent as "leave the builder's
+   * env-configured mirrors alone".
+   */
+  @Test
+  void anAckWithNoRegistryMirrorsKeyDecodesToANullMap() {
+    assertEquals(
+        new Ack(1, 2, null),
+        CiRunnerCodec.decode(Map.of("type", "ack", "capabilityVersion", 1, "slots", 2)));
+  }
+
+  @Test
+  void anAckWithRegistryMirrorsKeepsTheHostsOrderOnTheWire() {
+    Map<String, String> mirrors = new LinkedHashMap<>();
+    mirrors.put("mirror.dev.localhost:8080", "mirror.qits.wohlben.eu");
+    mirrors.put("registry.dev.localhost:8080", "registry.qits.wohlben.eu");
+    Ack ack = new Ack(1, 2, mirrors);
+    Map<String, Object> encoded = CiRunnerCodec.encode(ack);
+    @SuppressWarnings("unchecked")
+    Map<String, Object> onWire = (Map<String, Object>) encoded.get(CiRunnerProtocol.Field.REGISTRY_MIRRORS);
+    assertEquals(List.copyOf(mirrors.keySet()), List.copyOf(onWire.keySet()));
+    assertEquals(ack, CiRunnerCodec.decode(encoded));
   }
 
   @Test
