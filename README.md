@@ -174,10 +174,52 @@ and the builder joins that network too, so its pulls and pushes resolve that net
 The builder's `buildkitd.toml` is rendered the way qits-containers' `PlatformBuildkit` renders the
 platform builder's: `networkMode = "host"` and docker's embedded DNS (`127.0.0.11`) for its `RUN`s,
 then one `[registry."host"]` table per host from `QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS` and
-`QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES`. It reaches the container as an environment value the
+`QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES`. With both unset — the EDGE plane's default — the toml
+carries no `[registry.*]` table at all: nothing is rewritten, and every registry is reached exactly
+as the step spelled it. It reaches the container as an environment value the
 container writes to `/etc/buildkit/buildkitd.toml` itself. The container carries a stamp label, a
-hash of the image, the toml and the start script, and a builder whose stamp differs from the
-configured one is removed and started again with the new configuration.
+hash of the image, the toml, the start script and the CA bundle mounted into it (below), and a
+builder whose stamp differs from the configured one is removed and started again with the new
+configuration.
+
+## Build steps
+
+A step's spec sends it down one of two paths, decided by qits-ci and never by the runner:
+
+- **`build: true` or `docker: true`** — the step gets the runner's own buildkitd: it joins the
+  `qits-ci-runner` bridge and is handed `BUILDKIT_HOST=tcp://qits-ci-runner-buildkitd:1234` (unless
+  its spec already set the key), and its `buildctl`/`docker buildx` calls run there. The container
+  itself never touches the host's docker socket.
+  - `docker: true` *also* binds the host's own `/var/run/docker.sock` into the step — the one host
+    path this runner ever mounts into a step, and only because the spec declared it (see
+    `AGENTS.md`'s "Untrusted input"). A step that binds the socket gets the build plane too, the same
+    as `build: true`, since a socket is a builder whoever holds it.
+- **Neither key set** — a plain step: no builder is touched, no `BUILDKIT_HOST` is set, and the
+  container joins no network beyond whatever its own spec names.
+
+**What the host needs for a build to succeed.** Pulling and pushing against the platform's registry
+needs a certificate chain the builder can validate. On the **EDGE plane** — a runner reached through
+the public install line, dialling `registry.qits.<domain>` and friends — that chain is a normal
+publicly-issued one (Let's Encrypt), and the runner's own `moby/buildkit` image already carries a CA
+bundle able to validate it: the pinned image's `Dockerfile` builds its default (Alpine) export stage
+from `alpine:3.23`, whose base layer ships `/etc/ssl/certs/ca-certificates.crt` — Alpine's
+`ca-certificates-bundle` — without needing an explicit `apk add`; only the image's Ubuntu-export
+variant, which this runner does not use, installs the package by hand. On top of that, the builder
+mounts the *host's* CA bundle read-only over the same path when it can find one — probing
+`/etc/ssl/certs/ca-certificates.crt`, then `/etc/pki/tls/certs/ca-bundle.crt`, then
+`/etc/ssl/cert.pem` on the runner's own machine — so a host that trusts something the image's bundle
+does not (an operator's own root, say) has the builder trust it too; finding none is logged once and
+is not a failure, since the image's bundle already covers the platform's own chain. **A self-signed
+edge is out of scope**: nothing here adds a one-off certificate to the trust store, so a platform
+whose edge is not behind a publicly-issued certificate needs its own root laid down on the runner
+host at one of the three paths above before a build against it will trust the connection.
+
+On the **INTERNAL plane** — a runner sharing the platform host's `qits-net` — both
+`QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES` and `QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS` are set (see
+"Environment" above), and the builder speaks plain HTTP to the platform's own registry and mirror
+aliases instead, so no certificate is in question there at all. **On the EDGE plane both stay empty**
+— every registry a builder reaches from there is HTTPS with a public chain, and setting either would
+rewrite an in-network spelling nothing on that plane resolves.
 
 ## The install-script contract
 

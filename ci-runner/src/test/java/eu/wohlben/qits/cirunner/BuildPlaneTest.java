@@ -3,6 +3,7 @@ package eu.wohlben.qits.cirunner;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
@@ -178,6 +179,68 @@ class BuildPlaneTest {
     List<String> run = fake.calls("run").getFirst();
     assertTrue(run.contains("qits.ci.runner.buildkitd=" + after.stamp()));
     assertTrue(run.get(run.indexOf("-e") + 1).contains("[registry.\"dev-qits-artifacts:8080\"]\n  http = true"));
+  }
+
+  @Test
+  void aFoundHostCaBundleIsMountedReadOnlyAtTheImagesOwnPath() throws Exception {
+    Path bundle = dir.resolve("ca-certificates.crt");
+    Files.writeString(bundle, "-----BEGIN CERTIFICATE-----\n");
+    FakeDocker fake = new FakeDocker(dir).answer("inspect", 1, "", "No such object");
+    BuildPlane plane =
+        new BuildPlane(
+            fake.docker(10),
+            fake.binary,
+            "moby/buildkit:v0.33.0",
+            List.of(),
+            List.of(),
+            List.of(bundle.toString(), "/does/not/exist"));
+
+    assertEquals(Optional.empty(), plane.ensure(null));
+    List<String> run = fake.calls("run").getFirst();
+    assertTrue(
+        run.contains(bundle + ":/etc/ssl/certs/ca-certificates.crt:ro"),
+        () -> "no CA mount in " + run);
+  }
+
+  @Test
+  void noHostCaBundleFoundMountsNothing() throws Exception {
+    FakeDocker fake = new FakeDocker(dir).answer("inspect", 1, "", "No such object");
+    BuildPlane plane =
+        new BuildPlane(
+            fake.docker(10),
+            fake.binary,
+            "moby/buildkit:v0.33.0",
+            List.of(),
+            List.of(),
+            List.of("/does/not/exist", "/also/not/there"));
+
+    assertEquals(Optional.empty(), plane.ensure(null));
+    List<String> run = fake.calls("run").getFirst();
+    assertTrue(
+        run.stream().noneMatch(a -> a.endsWith(":/etc/ssl/certs/ca-certificates.crt:ro")),
+        () -> "unexpected CA mount in " + run);
+  }
+
+  @Test
+  void theCaBundlePathIsStampMaterialAndItsAbsenceReplacesTheBuilder() throws Exception {
+    Path bundle = dir.resolve("ca-certificates.crt");
+    Files.writeString(bundle, "-----BEGIN CERTIFICATE-----\n");
+    FakeDocker fake = new FakeDocker(dir);
+    BuildPlane withBundle =
+        new BuildPlane(
+            fake.docker(10), fake.binary, "moby/buildkit:v0.33.0", List.of(), List.of(),
+            List.of(bundle.toString()));
+    BuildPlane withoutBundle =
+        new BuildPlane(
+            fake.docker(10), fake.binary, "moby/buildkit:v0.33.0", List.of(), List.of(),
+            List.of("/does/not/exist"));
+    assertTrue(
+        !withBundle.stamp().equals(withoutBundle.stamp()), "the CA bundle path is stamp material");
+    // The running builder was started with the bundle mounted.
+    fake.answer("inspect", 0, withBundle.stamp() + "|running\n", "");
+
+    assertEquals(Optional.empty(), withoutBundle.ensure(null));
+    assertEquals(List.of(List.of("rm", "-f", "qits-ci-runner-buildkitd")), fake.calls("rm"));
   }
 
   @Test

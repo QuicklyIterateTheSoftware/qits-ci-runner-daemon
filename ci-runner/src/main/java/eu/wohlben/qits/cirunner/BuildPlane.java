@@ -1,6 +1,8 @@
 package eu.wohlben.qits.cirunner;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -44,6 +46,18 @@ import org.jboss.logging.Logger;
  * runner writes and docker reads, which is a host-path mount this runner otherwise never makes, and a
  * file the stamp does not see. The value is inside the {@code docker run}, so it is inside the
  * stamp by construction.
+ *
+ * <p><b>The host's CA bundle rides in too, when there is one to find.</b> A REMOTE runner dials the
+ * platform's public vhosts, whose certificates chain to a public root, and this image's own bundle
+ * (Alpine's {@code ca-certificates-bundle}, present in the {@code moby/buildkit} base without an
+ * explicit install — see the README) already validates that chain on its own. The mount exists for
+ * the host that added something Alpine's bundle does not carry — a corporate proxy's root, say — and
+ * so it takes the host's word over the image's: bound read-only at the image's own path, it shadows
+ * rather than supplements. {@link #HOST_CA_BUNDLE_CANDIDATES} is checked in order and the first hit
+ * wins; finding none is not a failure, only a build that trusts what the image shipped with, logged
+ * once so an operator who did expect one can tell. The chosen path (or its absence) is stamp
+ * material, so adding or removing it host-side replaces the builder the way any other config change
+ * does.
  */
 public final class BuildPlane {
 
@@ -66,6 +80,20 @@ public final class BuildPlane {
 
   /** The configuration stamp, and the mark of ownership — see the class javadoc. */
   public static final String STAMP_LABEL = "qits.ci.runner.buildkitd";
+
+  /** Where the mounted host CA bundle lands inside the builder — the image's own bundle's path. */
+  static final String CA_BUNDLE_MOUNT = "/etc/ssl/certs/ca-certificates.crt";
+
+  /**
+   * The host's CA bundle, wherever this Linux keeps it — Debian/Ubuntu/Alpine's path first (what the
+   * install script's target and this image both are), then RHEL/Fedora's, then the OpenSSL default a
+   * few distributions symlink to one of the other two rather than carrying their own copy.
+   */
+  static final List<String> HOST_CA_BUNDLE_CANDIDATES =
+      List.of(
+          "/etc/ssl/certs/ca-certificates.crt",
+          "/etc/pki/tls/certs/ca-bundle.crt",
+          "/etc/ssl/cert.pem");
 
   /**
    * qits-containers' {@code BUILDKITD_BOOTSTRAP}, verbatim: the toml arrives as an environment
@@ -91,6 +119,7 @@ public final class BuildPlane {
   private final String dockerBinary;
   private final String image;
   private final String toml;
+  private final Optional<String> caBundlePath;
 
   /** A builder with no registry configuration — every registry https and publicly resolvable. */
   public BuildPlane(Docker docker, String dockerBinary, String image) {
@@ -110,10 +139,43 @@ public final class BuildPlane {
       String image,
       List<String> httpRegistries,
       List<String> registryMirrors) {
+    this(docker, dockerBinary, image, httpRegistries, registryMirrors, HOST_CA_BUNDLE_CANDIDATES);
+  }
+
+  /**
+   * The full constructor, with the CA bundle candidates as their own argument rather than a probe
+   * this class runs unconditionally: a test asserting the mount's presence or absence needs to
+   * control what the "host" carries without touching the real one the suite happens to run on.
+   */
+  BuildPlane(
+      Docker docker,
+      String dockerBinary,
+      String image,
+      List<String> httpRegistries,
+      List<String> registryMirrors,
+      List<String> caBundleCandidates) {
     this.docker = docker;
     this.dockerBinary = dockerBinary;
     this.image = image;
     this.toml = renderToml(httpRegistries, registryMirrors);
+    this.caBundlePath = probeCaBundle(caBundleCandidates);
+  }
+
+  /**
+   * The first candidate that exists, or empty when none does. Run once, from the constructor: {@link
+   * eu.wohlben.qits.cirunner.Main} builds one {@code BuildPlane} for the process's whole life, so a
+   * single check here is the "log a WARN once" the brief asks for, with no latch to get wrong.
+   */
+  private static Optional<String> probeCaBundle(List<String> candidates) {
+    for (String candidate : candidates) {
+      if (Files.exists(Path.of(candidate))) {
+        return Optional.of(candidate);
+      }
+    }
+    LOG.warnf(
+        "ci-runner found no host CA bundle in %s; the builder will trust only the image's own",
+        candidates);
+    return Optional.empty();
   }
 
   /**
@@ -238,28 +300,34 @@ public final class BuildPlane {
    * express. buildkitd cannot mount overlayfs for its sandboxes without it.
    */
   List<String> runArgv(String stamp) {
-    return List.of(
-        dockerBinary,
-        "run",
-        "-d",
-        "--name",
-        CONTAINER,
-        "--network",
-        NETWORK,
-        "--label",
-        STAMP_LABEL + "=" + stamp,
-        "--privileged",
-        "--restart",
-        "unless-stopped",
-        "-v",
-        STATE_VOLUME + ":/var/lib/buildkit",
-        "-e",
-        "BUILDKITD_TOML=" + toml,
-        "--entrypoint",
-        "/bin/sh",
-        RunnerArgv.requireImage(image),
-        "-c",
-        BOOTSTRAP);
+    List<String> argv =
+        new ArrayList<>(
+            List.of(
+                dockerBinary,
+                "run",
+                "-d",
+                "--name",
+                CONTAINER,
+                "--network",
+                NETWORK,
+                "--label",
+                STAMP_LABEL + "=" + stamp,
+                "--privileged",
+                "--restart",
+                "unless-stopped",
+                "-v",
+                STATE_VOLUME + ":/var/lib/buildkit"));
+    caBundlePath.ifPresent(path -> argv.addAll(List.of("-v", path + ":" + CA_BUNDLE_MOUNT + ":ro")));
+    argv.addAll(
+        List.of(
+            "-e",
+            "BUILDKITD_TOML=" + toml,
+            "--entrypoint",
+            "/bin/sh",
+            RunnerArgv.requireImage(image),
+            "-c",
+            BOOTSTRAP));
+    return List.copyOf(argv);
   }
 
   /**
@@ -280,7 +348,7 @@ public final class BuildPlane {
   }
 
   String stamp() {
-    String material = image + "\n" + toml + "\n" + BOOTSTRAP;
+    String material = image + "\n" + toml + "\n" + BOOTSTRAP + "\n" + caBundlePath.orElse("");
     try {
       byte[] digest =
           MessageDigest.getInstance("SHA-256").digest(material.getBytes(StandardCharsets.UTF_8));

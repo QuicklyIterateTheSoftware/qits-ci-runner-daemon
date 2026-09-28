@@ -124,6 +124,23 @@ class LauncherTest {
   }
 
   @Test
+  void aBuildingStepWithNoNetworkNamedJoinsOnlyTheRunnerBridge() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("inspect", 1, "", "No such object")
+            .answer("run", 0, "cid\n", "");
+    launcher(fake).launch(new Launch("run-1", 0, building(null, Map.of(), false)));
+    List<String> step =
+        fake.calls().stream()
+            .filter(c -> c.get(0).equals("run") && c.contains("qits-ci-run-1-x-0"))
+            .findFirst()
+            .orElseThrow();
+    long networkFlags = step.stream().filter(a -> a.equals("--network")).count();
+    assertEquals(1, networkFlags, () -> "expected exactly one --network flag in " + step);
+    assertEquals("qits-ci-runner", step.get(step.indexOf("--network") + 1));
+  }
+
+  @Test
   void anEmptyBuildkitHostIsTheSwitchedOffValueAndIsNeverOverwritten() throws Exception {
     FakeDocker fake =
         new FakeDocker(dir).answer("inspect", 1, "", "").answer("run", 0, "cid\n", "");
