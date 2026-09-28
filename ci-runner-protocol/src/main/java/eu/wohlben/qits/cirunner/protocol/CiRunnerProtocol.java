@@ -33,7 +33,7 @@ public final class CiRunnerProtocol {
    * The capability version the runner announces in its {@link Hello} and the host echoes in its
    * {@link Ack}. Bumped when the wire contract changes in a way either side must branch on. A
    * runner that reads an {@link Ack} carrying a version it does not know exits nonzero rather than
-   * guessing; its unit restarts it and the journal says why.
+   * guessing; docker's restart policy restarts it and its log says why.
    *
    * <p><b>Deliberately still 1 after {@link Upgrade} and {@link Retire} arrived.</b> An older runner
    * drops a frame of a type it does not know and carries on, which is all an unknown {@code Upgrade}
@@ -87,9 +87,9 @@ public final class CiRunnerProtocol {
     public static final String DETAIL = "detail";
     public static final String WORKLOAD_SPEC = "workloadSpec";
 
-    // Upgrade and Retire. FROZEN, with RUNNER_VERSION above: see Upgrade.
+    // Upgrade and Retire. FROZEN, with RUNNER_VERSION above and Upgrade's use of IMAGE below: see
+    // Upgrade.
     public static final String VERSION = "version";
-    public static final String BINARY_URL = "binaryUrl";
     public static final String SHA256 = "sha256";
     public static final String REASON = "reason";
 
@@ -99,7 +99,7 @@ public final class CiRunnerProtocol {
     public static final String OS = "os";
     public static final String LABELS = "labels";
 
-    // WorkloadSpec (LABELS is shared with Capabilities)
+    // WorkloadSpec (LABELS is shared with Capabilities; IMAGE with Upgrade, where it is FROZEN)
     public static final String IMAGE = "image";
     public static final String ENTRYPOINT = "entrypoint";
     public static final String ARGS = "args";

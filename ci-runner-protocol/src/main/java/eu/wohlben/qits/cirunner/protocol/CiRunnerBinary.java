@@ -5,24 +5,26 @@ import java.io.InputStream;
 import java.util.Properties;
 
 /**
- * <b>What this jar was released with</b>: the {@code qits-ci-runner} binary version of the release
- * that published this artifact — {@code CiDaemonBinary}'s twin, and for the same reason.
+ * <b>What this jar was released with</b>: the {@code qits-ci-runner} version of the release that
+ * published this artifact — {@code CiDaemonBinary}'s twin, and for the same reason.
  *
- * <p>qits-ci renders the install script a person pastes on a runner host, and that script downloads
- * the binary from qits-artifacts by name and version. Taking the version from this constant makes
- * the pin a line in qits-ci's pom that its own release request gated, rather than whatever happened
- * to be newest in the store the moment somebody pressed copy — and it is the same release as the
- * wire contract qits-ci compiles against, so the host and the binary it hands out cannot disagree
- * about the protocol by a deployment act.
+ * <p>A runner is a container on its host, started from the image {@code <registry
+ * host>/}{@value #IMAGE_REPOSITORY}{@code :<version>} that this repository's release pushes beside
+ * this jar. qits-ci renders the install script a person pastes on a runner host from that image
+ * reference, and names the same reference in the {@link Upgrade} it sends a runner of any other
+ * version. Taking the version from this constant makes the pin a line in qits-ci's pom that its own
+ * release request gated, rather than whatever happened to be newest in the registry the moment
+ * somebody pressed copy — and it is the same release as the wire contract qits-ci compiles against,
+ * so the host and the runner it hands out cannot disagree about the protocol by a deployment act.
  *
  * <p><b>The value is this module's {@code ${project.version}}, resolved at build time</b> into
  * {@code ci-runner-binary.properties} beside this class. A build from a working tree therefore names
  * a {@code -SNAPSHOT} or the previous release, which is honest: nothing has been published for the
  * tree in hand.
  *
- * <p><b>The contract this names is a URL</b> — {@code …/artifacts/daemons/qits-ci-runner/<version>}
- * — so a blank or unfiltered value is refused loudly here rather than defaulted: a fallback would
- * compose a download that 404s on a machine nobody on the platform can see.
+ * <p><b>The contract this names is an image tag</b>, so a blank or unfiltered value is refused
+ * loudly here rather than defaulted: a fallback would compose a {@code docker pull} that fails on a
+ * machine nobody on the platform can see.
  */
 public final class CiRunnerBinary {
 
@@ -30,12 +32,19 @@ public final class CiRunnerBinary {
   private static final String RESOURCE = "ci-runner-binary.properties";
 
   /**
-   * The binary's artifact name in qits-artifacts' {@code daemons} store — the coordinate the
-   * release pipeline publishes under and the path segment the install script downloads from.
+   * The runner's name: the image's last path segment, the binary's file name inside it, and the
+   * prefix of every runner container's name on a host.
    */
   public static final String RUNNER_NAME = "qits-ci-runner";
 
-  /** The released version: the {@code qits-ci-runner} binary published beside this jar. */
+  /**
+   * The image's repository under the registry host — the coordinate this repository's release
+   * declares in {@code artifacts:} and pushes, and the one qits-ci prefixes with its registry's
+   * public host to render the install script and every {@link Upgrade}.
+   */
+  public static final String IMAGE_REPOSITORY = "qits/" + RUNNER_NAME;
+
+  /** The released version: the tag of the {@code qits-ci-runner} image published beside this jar. */
   public static final String VERSION = readVersion();
 
   private static String readVersion() {
@@ -43,7 +52,7 @@ public final class CiRunnerBinary {
     try (InputStream in = CiRunnerBinary.class.getResourceAsStream(RESOURCE)) {
       if (in == null) {
         // A jar of this module with the resource missing is a broken build, and an install script
-        // that silently downloaded "" or "latest" is the failure this class exists to remove.
+        // that silently pulled "" or "latest" is the failure this class exists to remove.
         throw new IllegalStateException(
             RESOURCE + " is not on the classpath beside " + CiRunnerBinary.class.getName());
       }

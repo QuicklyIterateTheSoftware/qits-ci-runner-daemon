@@ -27,9 +27,10 @@ class CiRunnerBinaryTest {
   }
 
   @Test
-  void theRunnerNameIsTheOneThePipelinePublishesUnder() {
-    // A literal, because it is a cross-repository contract: `.config/qits/release.yml` declares it
-    // in `artifacts:`, and qits-ci's install script downloads from that path segment.
+  void theImageIsTheOneThePipelinePublishesUnder() {
+    // Literals, because they are a cross-repository contract: `.config/qits/release.yml` declares
+    // the image in `artifacts:`, and qits-ci's install script and its Upgrade pull it by this name.
     assertEquals("qits-ci-runner", CiRunnerBinary.RUNNER_NAME);
+    assertEquals("qits/qits-ci-runner", CiRunnerBinary.IMAGE_REPOSITORY);
   }
 }

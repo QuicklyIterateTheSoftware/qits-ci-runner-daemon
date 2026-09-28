@@ -10,6 +10,6 @@ package eu.wohlben.qits.cirunner.protocol;
  * <p><b>THE WIRE SHAPE IS FROZEN</b> for {@link Upgrade}'s reason: the type {@code "retire"} and the
  * string field {@code reason}. Fields may be added; this one may not be renamed, retyped or removed.
  *
- * @param reason for the journal only — nothing branches on it.
+ * @param reason for the log only — nothing branches on it.
  */
 public record Retire(String reason) implements CiRunnerMessage {}

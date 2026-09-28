@@ -71,9 +71,13 @@ class CiRunnerCodecTest {
             new Released("run-1"),
             new Upgrade(
                 "2026.928.120000",
-                "https://registry.qits.example.eu/artifacts/daemons/qits-ci-runner/2026.928.120000",
+                "registry.qits.example.eu/qits/qits-ci-runner:2026.928.120000",
                 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-            new Upgrade("2026.928.120000", "https://registry.example/x", null),
+            new Upgrade(
+                "2026.928.120000",
+                "registry.qits.example.eu/qits/qits-ci-runner@sha256:"
+                    + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                null),
             new Retire("superseded by 2026.928.120000"));
     for (CiRunnerMessage message : all) {
       assertEquals(message, roundTrip(message), () -> "did not round-trip: " + message);
@@ -106,10 +110,10 @@ class CiRunnerCodecTest {
     Map<String, Object> upgrade = new LinkedHashMap<>();
     upgrade.put("type", "upgrade");
     upgrade.put("version", "2");
-    upgrade.put("binaryUrl", "https://r/x");
+    upgrade.put("image", "r/qits/qits-ci-runner:2");
     upgrade.put("sha256", "ab");
-    assertEquals(upgrade, CiRunnerCodec.encode(new Upgrade("2", "https://r/x", "ab")));
-    assertEquals(new Upgrade("2", "https://r/x", "ab"), CiRunnerCodec.decode(upgrade));
+    assertEquals(upgrade, CiRunnerCodec.encode(new Upgrade("2", "r/qits/qits-ci-runner:2", "ab")));
+    assertEquals(new Upgrade("2", "r/qits/qits-ci-runner:2", "ab"), CiRunnerCodec.decode(upgrade));
 
     assertEquals(
         Map.of("type", "retire", "reason", "superseded"),
@@ -128,9 +132,9 @@ class CiRunnerCodecTest {
     Map<String, Object> map = new LinkedHashMap<>();
     map.put("type", "upgrade");
     map.put("version", "2");
-    map.put("binaryUrl", "https://r/x");
+    map.put("image", "r/qits/qits-ci-runner:2");
     map.put("signature", "a field a later host may add");
-    assertEquals(new Upgrade("2", "https://r/x", null), CiRunnerCodec.decode(map));
+    assertEquals(new Upgrade("2", "r/qits/qits-ci-runner:2", null), CiRunnerCodec.decode(map));
   }
 
   /**
@@ -146,7 +150,7 @@ class CiRunnerCodecTest {
             CiRunnerDecodeException.class,
             () ->
                 CiRunnerCodec.decode(
-                    Map.of("type", "upgradeV2", "version", "2", "binaryUrl", "https://r/x")));
+                    Map.of("type", "upgradeV2", "version", "2", "image", "r/qits/qits-ci-runner:2")));
     assertEquals(CiRunnerDecodeException.Reason.UNKNOWN_TYPE, e.reason());
   }
 
