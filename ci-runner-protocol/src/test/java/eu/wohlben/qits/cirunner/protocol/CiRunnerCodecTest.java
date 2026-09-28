@@ -59,6 +59,7 @@ class CiRunnerCodecTest {
             new Launched("run-1", 2, "0123abcd"),
             new LaunchFailed("run-1", 2, "pull access denied"),
             new Reaped("run-1", 2),
+            new Reaped("run-1", 2, "[container exited 1]\nerror: no route to ci\n"),
             new Heartbeat(),
             new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 3),
             new Backlog(7),
@@ -152,6 +153,23 @@ class CiRunnerCodecTest {
                 CiRunnerCodec.decode(
                     Map.of("type", "upgradeV2", "version", "2", "image", "r/qits/qits-ci-runner:2")));
     assertEquals(CiRunnerDecodeException.Reason.UNKNOWN_TYPE, e.reason());
+  }
+
+  /**
+   * {@code logTail} arrived after the first runners were installed: their {@code reaped} frames
+   * carry no such key and must still decode, to a null tail, and the key a host reads is pinned as a
+   * literal so a rename of the constant cannot quietly move it.
+   */
+  @Test
+  void aReapedFromARunnerOlderThanTheLogTailDecodesToANullOne() {
+    assertEquals(
+        new Reaped("run-1", 2, null),
+        CiRunnerCodec.decode(Map.of("type", "reaped", "runId", "run-1", "stepIndex", 2)));
+    assertEquals(new Reaped("run-1", 2, null), new Reaped("run-1", 2));
+    assertEquals(
+        "exited",
+        CiRunnerCodec.encode(new Reaped("run-1", 2, "exited")).get("logTail"),
+        "the host reads the tail under this key");
   }
 
   @Test

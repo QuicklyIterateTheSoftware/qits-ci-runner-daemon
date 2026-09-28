@@ -60,6 +60,7 @@ public final class CiRunnerCodec {
         map.put(Field.TYPE, Type.REAPED);
         map.put(Field.RUN_ID, m.runId());
         map.put(Field.STEP_INDEX, m.stepIndex());
+        map.put(Field.LOG_TAIL, m.logTail());
       }
       case Heartbeat _ -> map.put(Field.TYPE, Type.HEARTBEAT);
       case Ack m -> {
@@ -142,7 +143,9 @@ public final class CiRunnerCodec {
         case Type.LAUNCH_FAILED ->
             new LaunchFailed(
                 str(map, Field.RUN_ID), intVal(map, Field.STEP_INDEX), str(map, Field.DETAIL));
-        case Type.REAPED -> new Reaped(str(map, Field.RUN_ID), intVal(map, Field.STEP_INDEX));
+        case Type.REAPED ->
+            new Reaped(
+                str(map, Field.RUN_ID), intVal(map, Field.STEP_INDEX), str(map, Field.LOG_TAIL));
         case Type.HEARTBEAT -> new Heartbeat();
         case Type.ACK -> new Ack(intVal(map, Field.CAPABILITY_VERSION), intVal(map, Field.SLOTS));
         case Type.BACKLOG -> new Backlog(intVal(map, Field.QUEUED));

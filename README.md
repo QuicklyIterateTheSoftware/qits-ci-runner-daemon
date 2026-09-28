@@ -226,7 +226,7 @@ docker call goes through `Docker`, under a deadline.
     Backlog{queued}*                         pushed whenever the queue changes
     Reserve → Take{run} | Nothing            one outstanding at a time
     Launch{run, step, workloadSpec} → Launched{containerId} | LaunchFailed{detail}
-    Reap{run, step, containerName} → Reaped
+    Reap{run, step, containerName} → Reaped{logTail?}   the container's last output, read before removal
     Cancel{run}                              remove every container of the run now
     Released{run}                            the run is closed; its slot is free
     Upgrade{version, image, sha256?}         become this version: drain, pull, start a successor

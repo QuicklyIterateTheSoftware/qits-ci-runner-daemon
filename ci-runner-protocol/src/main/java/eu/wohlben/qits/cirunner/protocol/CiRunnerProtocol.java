@@ -85,6 +85,7 @@ public final class CiRunnerProtocol {
     public static final String CONTAINER_ID = "containerId";
     public static final String CONTAINER_NAME = "containerName";
     public static final String DETAIL = "detail";
+    public static final String LOG_TAIL = "logTail";
     public static final String WORKLOAD_SPEC = "workloadSpec";
 
     // Upgrade and Retire. FROZEN, with RUNNER_VERSION above and Upgrade's use of IMAGE below: see
