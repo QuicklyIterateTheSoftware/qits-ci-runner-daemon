@@ -21,8 +21,9 @@
 #      are the real ones.
 #   2. It takes docker, id, useradd, systemctl and curl from PATH — never an absolute path — so the
 #      stubs below stand in for them. The root check is `id -u` answering 0.
-#   3. The binary lands executable at $ROOT/usr/local/bin/qits-ci-runner, downloaded with curl. When
-#      an executable is already there (a rotation), it is kept and curl is not called for it.
+#   3. The binary lands executable at $ROOT/usr/local/bin/qits-ci-runner, downloaded with curl. A
+#      rotation — an executable already there — downloads it again and replaces it with the pinned
+#      version; only whether the unit gets restarted afterward depends on it having been there.
 #   4. $ROOT/etc/qits-ci-runner.env is mode 0600 and carries exactly five variables, one KEY=value
 #      per line: QITS_CI_RUNNER_URL, QITS_CI_RUNNER_ID, QITS_CI_RUNNER_REGISTRATION_TOKEN,
 #      QITS_CI_RUNNER_STATE_DIR, QITS_CI_RUNNER_SLOTS. A rotation rewrites it with the new token.
@@ -198,7 +199,10 @@ NEW_TOKEN="qits_tok_ROTATED-$$-DO-NOT-PRINT"
 : > "$CALLS"
 run_install "$NEW_TOKEN" rotation
 
-grep -q '^curl ' "$CALLS" && fail "a rotation downloaded the binary again instead of keeping it"
+grep -q '^curl .*/qits-ci-runner' "$CALLS" || fail "a rotation did not download the binary again"
+grep -q "^curl .*Authorization: Bearer $NEW_TOKEN" "$CALLS" || fail "a rotation did not download the binary with the new registration token as its bearer"
+[ -x "$BIN" ] || fail "the binary is no longer executable after a rotation"
+[ "$("$BIN")" = "qits-ci-runner-stub" ] || fail "the rotated binary is not what curl downloaded"
 [ "$(env_value QITS_CI_RUNNER_REGISTRATION_TOKEN)" = "$NEW_TOKEN" ] || fail "the env file does not carry the new token"
 [ "$(mode_of "$ENVFILE")" = "600" ] || fail "the rewritten env file is mode $(mode_of "$ENVFILE")"
 grep -qx 'systemctl restart qits-ci-runner' "$CALLS" || fail "a rotation did not restart the unit"

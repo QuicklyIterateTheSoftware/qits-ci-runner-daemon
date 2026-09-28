@@ -71,10 +71,10 @@ run …` as work arrives.
 ### Rotating the registration
 
 In the CI UI, **Replace registration token** on the runner, then paste the **new line** into a shell
-exactly as the first time. The script finds the binary already installed and keeps it, rewrites only
-`/etc/qits-ci-runner.env` with the new token, and restarts the unit; the runner sees a token it has
-not registered with and registers again, replacing its stored credentials. The old line stops
-working: its token is deleted when the new one is minted.
+exactly as the first time. The script downloads the pinned binary again, replacing whatever was
+already installed, rewrites `/etc/qits-ci-runner.env` with the new token, and restarts the unit; the
+runner sees a token it has not registered with and registers again, replacing its stored credentials.
+The old line stops working: its token is deleted when the new one is minted.
 
 ### Removing a runner
 
@@ -197,8 +197,9 @@ the four values in its environment. The template must honour:
    `$ROOT/etc/systemd/system/qits-ci-runner.service`.
 2. It takes `docker`, `id`, `useradd`, `systemctl` and `curl` from `PATH`, never by absolute path.
    The root check is `id -u` answering `0`.
-3. The binary lands executable at `$ROOT/usr/local/bin/qits-ci-runner`, downloaded with `curl`; when
-   an executable is already there (a rotation) it is kept and not downloaded again.
+3. The binary lands executable at `$ROOT/usr/local/bin/qits-ci-runner`, downloaded with `curl`; a
+   rotation — an executable already there — downloads it again and replaces it with the pinned
+   version.
 4. `$ROOT/etc/qits-ci-runner.env` is mode 0600 and carries exactly `QITS_CI_RUNNER_URL`,
    `QITS_CI_RUNNER_ID`, `QITS_CI_RUNNER_REGISTRATION_TOKEN`, `QITS_CI_RUNNER_STATE_DIR` and
    `QITS_CI_RUNNER_SLOTS`, one `KEY=value` per line; a rotation rewrites it with the new token.
