@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.AbstractMap;
 import java.util.LinkedHashMap;
@@ -62,6 +63,16 @@ class CiRunnerCodecTest {
                 2,
                 new Capabilities(true, "amd64", "linux", Map.of()),
                 List.of("run-1", "run-2")),
+            new Hello(
+                "2026.929.1",
+                CiRunnerProtocol.CAPABILITY_VERSION,
+                2,
+                new Capabilities(true, "amd64", "linux", Map.of(), Capabilities.FULL_ID_RANGE)),
+            new Hello(
+                "2026.929.1",
+                CiRunnerProtocol.CAPABILITY_VERSION,
+                2,
+                new Capabilities(true, "amd64", "linux", Map.of(), 65536L)),
             new Reserve(),
             new Launched("run-1", 2, "0123abcd"),
             new LaunchFailed("run-1", 2, "pull access denied"),
@@ -381,5 +392,41 @@ class CiRunnerCodecTest {
     map.put("stepIndex", 0);
     map.put("workloadSpec", Map.of("image", "alpine:3", "name", "n"));
     assertEquals(new Launch("r", 0, WorkloadSpec.of("alpine:3", "n")), CiRunnerCodec.decode(map));
+  }
+
+  @Test
+  void anUnknownIdRangeIsAnAbsentKeyAndAnAbsentKeyIsUnknown() {
+    Map<String, Object> encoded =
+        CiRunnerCodec.encode(new Hello("v", 1, 0, new Capabilities(true, "amd64", "linux", Map.of())));
+    @SuppressWarnings("unchecked")
+    Map<String, Object> caps = (Map<String, Object>) encoded.get("capabilities");
+    assertFalse(caps.containsKey("idRange"), "an older runner's frame, unchanged");
+    Hello decoded = (Hello) CiRunnerCodec.decode(encoded);
+    assertNull(decoded.capabilities().idRange());
+    assertFalse(decoded.capabilities().narrowIdRange(), "unknown is not narrow");
+  }
+
+  @Test
+  void anIdRangeDecodedAsAnIntegerIsStillALongAndTheFullSpaceIsNotNarrow() {
+    // Jackson hands a small number over as an Integer, and 2^32-1 only fits a Long.
+    Map<String, Object> caps = new LinkedHashMap<>();
+    caps.put("docker", true);
+    caps.put("arch", "amd64");
+    caps.put("os", "linux");
+    caps.put("idRange", 65536);
+    Map<String, Object> hello = new LinkedHashMap<>();
+    hello.put("type", "hello");
+    hello.put("runnerVersion", "v");
+    hello.put("capabilityVersion", 1);
+    hello.put("capabilities", caps);
+    Capabilities narrow = ((Hello) CiRunnerCodec.decode(hello)).capabilities();
+    assertEquals(Long.valueOf(65536L), narrow.idRange());
+    assertTrue(narrow.narrowIdRange());
+    caps.put("idRange", 4294967295L);
+    assertFalse(((Hello) CiRunnerCodec.decode(hello)).capabilities().narrowIdRange());
+    caps.put("idRange", "wide");
+    assertEquals(
+        CiRunnerDecodeException.Reason.MALFORMED,
+        assertThrows(CiRunnerDecodeException.class, () -> CiRunnerCodec.decode(hello)).reason());
   }
 }

@@ -139,6 +139,9 @@ public final class CiRunnerProtocol {
     public static final String OS = "os";
     public static final String LABELS = "labels";
 
+    /** Capabilities' mapped uid/gid range — added, and absent when unknown: see Capabilities. */
+    public static final String ID_RANGE = "idRange";
+
     // WorkloadSpec (LABELS is shared with Capabilities; IMAGE with Upgrade, where it is FROZEN)
     public static final String IMAGE = "image";
     public static final String ENTRYPOINT = "entrypoint";

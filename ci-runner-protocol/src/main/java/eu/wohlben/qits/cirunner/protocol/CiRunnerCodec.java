@@ -225,6 +225,10 @@ public final class CiRunnerCodec {
     map.put(Field.ARCH, c.arch());
     map.put(Field.OS, c.os());
     map.put(Field.LABELS, new LinkedHashMap<>(c.labels()));
+    // Only when known: an unknown range is an absent key, the frame an older runner always sent.
+    if (c.idRange() != null) {
+      map.put(Field.ID_RANGE, c.idRange());
+    }
     return map;
   }
 
@@ -232,11 +236,13 @@ public final class CiRunnerCodec {
     if (map == null) {
       return null;
     }
+    Number idRange = number(map, Field.ID_RANGE);
     return new Capabilities(
         boolVal(map, Field.DOCKER),
         str(map, Field.ARCH),
         str(map, Field.OS),
-        stringMap(map, Field.LABELS));
+        stringMap(map, Field.LABELS),
+        idRange == null ? null : idRange.longValue());
   }
 
   private static Map<String, Object> spec(WorkloadSpec s) {

@@ -161,7 +161,7 @@ public class Main {
       Docker docker = Docker.forking(env.dockerTimeoutSeconds());
       Http http = new Http(vertx, httpTimeoutMillis);
       Optional<String> self = SelfContainer.detect();
-      Capabilities capabilities = capabilities();
+      Capabilities capabilities = capabilities(IdRange.PROC_SELF);
       Telemetry telemetry =
           telemetryUrl == null
               ? Telemetry.off()
@@ -178,6 +178,10 @@ public class Main {
       java.util.logging.Logger.getLogger("").addHandler(telemetry);
       if (self.isPresent()) {
         LOG.infof("ci-runner %s is running in container %s", CiRunnerBinary.VERSION, self.get());
+      }
+      // After the telemetry handler, so the one line an operator must act on is shipped too.
+      if (capabilities.narrowIdRange()) {
+        LOG.warn(IdRange.narrowWarning(capabilities.idRange()));
       }
       if (telemetryUrl == null) {
         LOG.infof(
@@ -278,9 +282,10 @@ public class Main {
   /**
    * What this host can do. {@code docker} is whether the socket a {@code docker: true} step would be
    * handed exists here — the one capability qits-ci matches on. The platform is spelled the way an
-   * image's is ({@code amd64}, {@code arm64}, {@code linux}), so a later match needs no table.
+   * image's is ({@code amd64}, {@code arm64}, {@code linux}), so a later match needs no table. The
+   * id range is read from {@code procSelf}'s maps (see {@link IdRange}).
    */
-  static Capabilities capabilities() {
+  static Capabilities capabilities(Path procSelf) {
     String arch =
         switch (System.getProperty("os.arch", "").toLowerCase(Locale.ROOT)) {
           case "amd64", "x86_64" -> "amd64";
@@ -289,6 +294,6 @@ public class Main {
         };
     String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
     boolean docker = Files.exists(Path.of(RunnerArgv.DOCKER_SOCKET));
-    return new Capabilities(docker, arch, os, Map.of());
+    return new Capabilities(docker, arch, os, Map.of(), IdRange.read(procSelf));
   }
 }
