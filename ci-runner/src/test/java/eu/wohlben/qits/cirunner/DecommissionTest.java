@@ -58,13 +58,22 @@ class DecommissionTest {
 
     List<List<String>> calls = ReaperTest.withoutReads(docker.calls());
     List<List<String>> removals =
-        calls.stream().filter(c -> c.getFirst().equals("rm") || c.getFirst().equals("volume")).toList();
+        calls.stream()
+            .filter(
+                c ->
+                    c.getFirst().equals("rm")
+                        || c.getFirst().equals("volume")
+                        || c.getFirst().equals("network"))
+            .toList();
     assertEquals(
         List.of(
             List.of("rm", "-f", "aaaaaaaaaaaa"),
             List.of("rm", "-f", "bbbbbbbbbbbb"),
             List.of("rm", "-f", "step1"),
             List.of("rm", "-f", "step2"),
+            List.of("rm", "-f", BuildPlane.CONTAINER),
+            List.of("volume", "rm", BuildPlane.STATE_VOLUME),
+            List.of("network", "rm", BuildPlane.NETWORK),
             List.of("volume", "rm", "qits-ci-runner-state-r1"),
             List.of("rm", "-f", HELPER)),
         removals);
@@ -75,11 +84,40 @@ class DecommissionTest {
   }
 
   @Test
+  void theHelperAlwaysTakesTheNodesBuilderWithIt() throws Exception {
+    assertEquals(0, finish(null));
+    assertTrue(docker.calls("rm").contains(List.of("rm", "-f", BuildPlane.CONTAINER)));
+    assertTrue(docker.calls("volume").contains(List.of("volume", "rm", BuildPlane.STATE_VOLUME)));
+    assertTrue(docker.calls("network").contains(List.of("network", "rm", BuildPlane.NETWORK)));
+  }
+
+  @Test
+  void aFailingBuilderRemovalIsLoggedAndDoesNotFailTheDecommission() throws Exception {
+    docker.answerFor(
+        "rm", BuildPlane.CONTAINER, 1, "", "Error response from daemon: cannot remove container");
+
+    assertEquals(0, finish(null), () -> String.join("\n", said));
+    assertTrue(
+        said.stream().anyMatch(line -> line.contains("could not remove the builder")),
+        () -> String.join("\n", said));
+  }
+
+  @Test
   void aVolumeStillInUseIsRetriedAndOneThatStaysLeavesTheHelperStanding() throws Exception {
-    docker.answer("volume-rm", 1, "", "Error response from daemon: remove x: volume is in use");
+    docker.answerFor(
+        "volume-rm",
+        "qits-ci-runner-state-r1",
+        1,
+        "",
+        "Error response from daemon: remove x: volume is in use");
 
     assertEquals(1, finish("qits-ci-runner-state-r1"));
-    assertEquals(3, docker.calls("volume").size(), "retried, since a volume is released late");
+    assertEquals(
+        3,
+        docker.calls("volume").stream()
+            .filter(c -> c.contains("qits-ci-runner-state-r1"))
+            .count(),
+        "retried, since a volume is released late");
     assertFalse(
         docker.calls().contains(List.of("rm", "-f", HELPER)),
         "a helper that failed stays, with its log");
@@ -93,9 +131,10 @@ class DecommissionTest {
   }
 
   @Test
-  void withNoVolumeNamedNoVolumeIsTouched() throws Exception {
+  void withNoVolumeNamedOnlyTheBuildersVolumeIsTouched() throws Exception {
     assertEquals(0, finish(null));
-    assertTrue(docker.calls("volume").isEmpty());
+    assertEquals(
+        List.of(List.of("volume", "rm", BuildPlane.STATE_VOLUME)), docker.calls("volume"));
   }
 
   @Test

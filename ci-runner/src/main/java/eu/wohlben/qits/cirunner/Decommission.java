@@ -11,9 +11,10 @@ import org.jboss.logging.Logger;
 
 /**
  * A deleted runner removing itself from its host: its container, every other container of its id,
- * and its state volume. The difference from a {@link Rollover} retirement is that nothing takes over
- * — there is no successor to remove the exited predecessor, and the state volume holds a client the
- * platform has already revoked, so it is dead weight rather than something to hand on.
+ * its state volume, and — because a node runs one runner — the node's {@link BuildPlane} too. The
+ * difference from a {@link Rollover} retirement is that nothing takes over — there is no successor
+ * to remove the exited predecessor or to keep using the builder, and the state volume holds a client
+ * the platform has already revoked, so it is dead weight rather than something to hand on.
  *
  * <pre>
  *   the runner process ({@link #leave}):
@@ -25,6 +26,7 @@ import org.jboss.logging.Logger;
  *   the helper ({@link #finish}):
  *     every container labelled qits.ci.runner.process=&lt;id&gt; → wait for it to exit, docker rm -f
  *     every container labelled qits.ci.runner=&lt;id&gt;         → docker rm -f (the step containers)
+ *     the node's builder ({@link BuildPlane}), its state volume and its network → docker rm -f
  *     docker volume rm qits-ci-runner-state-&lt;id8&gt;
  *     docker rm -f itself
  * </pre>
@@ -42,6 +44,12 @@ import org.jboss.logging.Logger;
  * worst case is an exited container and a volume a person removes by hand — never a runner that
  * restarts and redials forever, which was the defect. A helper that fails stays, exited, with its
  * log; one that succeeds removes itself last.
+ *
+ * <p><b>The builder is best-effort.</b> {@link BuildPlane#CONTAINER}, {@link
+ * BuildPlane#STATE_VOLUME} and {@link BuildPlane#NETWORK} are removed unconditionally — one runner
+ * per node means the runner being deleted is always the builder's only claimant — but a failure
+ * there is logged and never counts against {@code clean}: an operator's leftover builder is not a
+ * reason to leave the runner itself stuck undecommissioned.
  */
 public final class Decommission {
 
@@ -181,6 +189,7 @@ public final class Decommission {
       say.accept("could not list runner " + runnerId + "'s step containers: " + steps.detail());
       clean = false;
     }
+    removeBuildPlane(docker, dockerBinary, say);
     if (volume != null && !volume.isBlank()) {
       clean &= removeVolume(docker, dockerBinary, volume, settings, say);
     }
@@ -215,6 +224,39 @@ public final class Decommission {
    * A volume is released a moment after the container using it is removed, so a refusal is retried
    * a few times before it counts. An absent volume is as good as a removed one.
    */
+  /**
+   * The node's shared {@link BuildPlane} — one runner per node, so a deleted runner is the node's
+   * only claim on its builder and takes it too. Best-effort and never {@code clean &= }: a builder
+   * that would not go is an operator's cleanup, not a reason to leave the runner itself
+   * undecommissioned.
+   */
+  private static void removeBuildPlane(Docker docker, String dockerBinary, Consumer<String> say) {
+    Docker.Result container = docker.run(RunnerArgv.rm(dockerBinary, BuildPlane.CONTAINER));
+    if (container.ok()) {
+      say.accept("removed the builder " + BuildPlane.CONTAINER);
+    } else {
+      say.accept(
+          "could not remove the builder " + BuildPlane.CONTAINER + ": " + container.detail());
+    }
+    Docker.Result volume = docker.run(RunnerArgv.volumeRm(dockerBinary, BuildPlane.STATE_VOLUME));
+    if (volume.ok() || volume.detail().toLowerCase().contains("no such volume")) {
+      say.accept("removed the builder's state volume " + BuildPlane.STATE_VOLUME);
+    } else {
+      say.accept(
+          "could not remove the builder's state volume "
+              + BuildPlane.STATE_VOLUME
+              + ": "
+              + volume.detail());
+    }
+    Docker.Result network = docker.run(RunnerArgv.networkRm(dockerBinary, BuildPlane.NETWORK));
+    if (network.ok() || network.detail().toLowerCase().contains("not found")) {
+      say.accept("removed the runner network " + BuildPlane.NETWORK);
+    } else {
+      say.accept(
+          "could not remove the runner network " + BuildPlane.NETWORK + ": " + network.detail());
+    }
+  }
+
   private static boolean removeVolume(
       Docker docker, String dockerBinary, String volume, Settings settings, Consumer<String> say) {
     Docker.Result gone = null;

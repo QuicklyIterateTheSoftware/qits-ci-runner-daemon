@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.cirunner.protocol.Retire;
 import eu.wohlben.qits.cirunner.protocol.Upgrade;
 import io.vertx.core.json.JsonObject;
 import java.nio.charset.StandardCharsets;
@@ -93,5 +94,34 @@ class RolloverTest {
     assertTrue(failure.isPresent());
     assertFalse(failure.get().contains(CLIENT.secret()), failure::get);
     assertTrue(failure.get().contains("[redacted]"), failure::get);
+  }
+
+  @Test
+  void aSupersededRetirementNeverTouchesTheNodesBuilder(@TempDir Path dir) throws Exception {
+    FakeDocker docker = new FakeDocker(dir);
+    Rollover rollover =
+        new Rollover(
+            docker.docker(10),
+            docker.binary,
+            "r1",
+            "2026.1.1",
+            Optional.of("selfid"),
+            new Rollover.Settings(100, 400, 3_000, 3_000, 50),
+            CLIENT,
+            NO_RUNS_HELD);
+
+    rollover.leave();
+    // No upgrade was ever asked for, so this is the operator's own retirement — the SUPERSEDED path.
+    rollover.retire(new Retire("operator retirement", Retire.Kind.SUPERSEDED));
+
+    List<List<String>> calls = docker.calls();
+    assertTrue(
+        calls.stream()
+            .noneMatch(
+                call ->
+                    call.contains(BuildPlane.CONTAINER)
+                        || call.contains(BuildPlane.STATE_VOLUME)
+                        || call.contains(BuildPlane.NETWORK)),
+        () -> "rollover must never touch the shared builder: " + calls);
   }
 }

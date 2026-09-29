@@ -296,7 +296,9 @@ it held and anything else under its label, deletes `client.json`, takes its own 
 starts a helper container (`qits-ci-runner-<id8>-decommission`, its own image with the docker socket)
 and exits 0. The helper waits for every container labelled `qits.ci.runner.process=<id>` to exit,
 removes them, removes the state volume `qits-ci-runner-state-<id8>`, and removes itself; a helper that
-could not finish stays, exited, with its log.
+could not finish stays, exited, with its log. A runner owns its node's builder, so the helper also
+takes the shared `qits-ci-runner-buildkitd` (see "Build steps" below) with it — its container, its
+state volume and the runner network — best-effort, on the way to removing the state volume.
 
 A runner that was offline when it was deleted finds out when it dials, and decommissions itself the
 same way. Two answers say it, and nothing else does: the CI closing the socket `1008

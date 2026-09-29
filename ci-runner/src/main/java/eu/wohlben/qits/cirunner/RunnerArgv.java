@@ -398,6 +398,11 @@ public final class RunnerArgv {
     return List.of(dockerBinary, "volume", "rm", require(NAME, "volume", volume));
   }
 
+  /** Remove a named network — the runner-owned bridge {@link BuildPlane#NETWORK}, once it is idle. */
+  public static List<String> networkRm(String dockerBinary, String network) {
+    return List.of(dockerBinary, "network", "rm", require(NAME, "network", network));
+  }
+
   /**
    * Every runner container of this runner id — {@link #PROCESS_LABEL}, never the step label — one
    * line each in {@link #PROCESS_FORMAT}. The filter is the last element, as the sweep's is.
