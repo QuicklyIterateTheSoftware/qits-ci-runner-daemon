@@ -365,7 +365,7 @@ public final class RunnerMain implements ControlSocket.Listener {
             for (String runId : held) {
               parts.reaper().cancel(runId);
             }
-            parts.sweep().sweep(carried);
+            parts.sweep().sweep();
             if (parts.decommission() != null) {
               parts.decommission().leave();
             } else if (r != null) {
