@@ -65,8 +65,12 @@ public final class Bearer {
             response -> {
               if (response.status() != 200) {
                 // The body can echo the request; the status is what an operator can act on.
-                return Future.failedFuture(
-                    "the token endpoint answered " + response.status() + " for " + client.clientId());
+                String why =
+                    "the token endpoint answered " + response.status() + " for " + client.clientId();
+                if (refusesTheClient(response.status(), response.body())) {
+                  return Future.failedFuture(new ClientRefused(why + " (invalid_client)"));
+                }
+                return Future.failedFuture(why);
               }
               JsonObject json = new JsonObject(response.body());
               String minted = json.getString("access_token");
@@ -81,6 +85,39 @@ public final class Bearer {
               }
               return Future.succeededFuture(minted);
             });
+  }
+
+  /**
+   * The token endpoint said, in OAuth's own words, that it does not know this client: {@code
+   * invalid_client} as the {@code error} of a JSON body, on a 400 or a 401 (RFC 6749 5.2 allows
+   * either). qits-idp answers exactly that for an unknown client id — which is what a runner's client
+   * becomes when the runner is deleted — and for a wrong secret. Anything else is not this: a 5xx, a
+   * 401 an edge wrote with some other body, a timeout, a refused connection — those are a platform
+   * that is down or restarting, and are retried as ever.
+   *
+   * <p>This is evidence, not a verdict. One {@code invalid_client} could be an idp answering from a
+   * store that is not ready yet; {@link ControlSocket} only believes a streak of them.
+   */
+  static boolean refusesTheClient(int status, String body) {
+    if ((status != 400 && status != 401) || body == null || body.isBlank()) {
+      return false;
+    }
+    try {
+      return "invalid_client".equals(new JsonObject(body).getString("error"));
+    } catch (RuntimeException notJson) {
+      return false;
+    }
+  }
+
+  /**
+   * A mint the token endpoint refused with {@code invalid_client} — see {@link #refusesTheClient}.
+   * Its own type so {@link ControlSocket} can tell it from every transient failure without reading a
+   * message.
+   */
+  public static final class ClientRefused extends RuntimeException {
+    public ClientRefused(String message) {
+      super(message, null, false, false);
+    }
   }
 
   /** {@code application/x-www-form-urlencoded}, RFC 6749 appendix B. */

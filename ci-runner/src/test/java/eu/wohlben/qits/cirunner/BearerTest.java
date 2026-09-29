@@ -1,7 +1,9 @@
 package eu.wohlben.qits.cirunner;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.vertx.core.Vertx;
 import java.util.concurrent.TimeUnit;
@@ -95,5 +97,48 @@ class BearerTest {
 
   private static String get(Bearer bearer) throws Exception {
     return bearer.token().toCompletionStage().toCompletableFuture().get(10, TimeUnit.SECONDS);
+  }
+
+  @Test
+  void onlyAnOauthInvalidClientOnA400Or401IsAClientRefusal() {
+    assertTrue(Bearer.refusesTheClient(401, "{\"error\":\"invalid_client\"}"));
+    assertTrue(
+        Bearer.refusesTheClient(
+            400, "{\"error\":\"invalid_client\",\"error_description\":\"client authentication failed\"}"));
+    // The edge's own 401, an idp that is down, a gateway: the platform, not the runner's client.
+    assertFalse(Bearer.refusesTheClient(401, "{\"error\":\"client authentication is required\"}"));
+    assertFalse(Bearer.refusesTheClient(401, "<html>Unauthorized</html>"));
+    assertFalse(Bearer.refusesTheClient(401, ""));
+    assertFalse(Bearer.refusesTheClient(502, "{\"error\":\"invalid_client\"}"));
+    assertFalse(Bearer.refusesTheClient(503, "Service Unavailable"));
+    assertFalse(Bearer.refusesTheClient(400, "{\"error\":\"invalid_grant\"}"));
+  }
+
+  @Test
+  void aRefusedClientFailsTheMintWithItsOwnTypeAndAnyOtherRefusalDoesNot() throws Exception {
+    try (FakeHost host = new FakeHost(vertx)) {
+      ClientCredentials client =
+          new ClientCredentials(
+              "ci-runner-r1", "client-secret", host.base() + "/token", "", "ws://127.0.0.1:1/x", "");
+      Bearer bearer = new Bearer(new Http(vertx, 5_000), client, System::currentTimeMillis);
+
+      host.tokenStatus = 401;
+      host.tokenErrorBody = "{\"error\":\"invalid_client\"}";
+      Throwable refused = failure(bearer);
+      assertTrue(refused instanceof Bearer.ClientRefused, refused::toString);
+
+      host.tokenStatus = 502;
+      host.tokenErrorBody = "Bad Gateway";
+      Throwable transientFailure = failure(bearer);
+      assertFalse(transientFailure instanceof Bearer.ClientRefused, transientFailure::toString);
+    }
+  }
+
+  private static Throwable failure(Bearer bearer) throws Exception {
+    java.util.concurrent.CompletableFuture<Throwable> failed = new java.util.concurrent.CompletableFuture<>();
+    bearer.token().onComplete(r -> failed.complete(r.failed() ? r.cause() : null));
+    Throwable cause = failed.get(10, TimeUnit.SECONDS);
+    assertTrue(cause != null, "the mint failed");
+    return cause;
   }
 }

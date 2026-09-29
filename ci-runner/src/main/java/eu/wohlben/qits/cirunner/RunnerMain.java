@@ -19,6 +19,7 @@ import eu.wohlben.qits.cirunner.protocol.Retire;
 import eu.wohlben.qits.cirunner.protocol.Take;
 import eu.wohlben.qits.cirunner.protocol.Upgrade;
 import io.vertx.core.Vertx;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -34,6 +35,11 @@ import org.jboss.logging.Logger;
  *
  * <p>An {@code Upgrade} makes the process drain and hands the rest to {@link Rollover}: a successor
  * container is started once no run is held, and a {@code Retire} is the one orderly way out.
+ *
+ * <p><b>A deleted runner decommissions itself</b> ({@link #decommission}): told so by a {@code
+ * Retire} of kind {@code DELETED} while connected, or by {@link ControlSocket.Listener#onDeleted}
+ * when it finds out on a dial. It takes no more work, cancels what it holds, sweeps its step
+ * containers, and hands its container and state volume to {@link Decommission}.
  *
  * <p><b>qits-ci keeps the run; the runner keeps the containers.</b> Nothing here knows what a step
  * is for, how many a run has or whether one passed — qits-ci drives each run and the step's own
@@ -58,7 +64,27 @@ public final class RunnerMain implements ControlSocket.Listener {
       Capabilities capabilities,
       java.util.function.Function<ClientCredentials, Bearer> bearer,
       Rollover.Factory rollover,
-      Telemetry telemetry) {
+      Telemetry telemetry,
+      Decommission decommission) {
+
+    /**
+     * The parts of a runner with no way to remove itself: told it was deleted, it still stops for
+     * good and exits, and leaves its container to a person.
+     */
+    public Parts(
+        Registration registration,
+        java.util.function.Function<ClientCredentials, ControlSocket.Settings> settings,
+        BootSweep sweep,
+        Launcher launcher,
+        Reaper reaper,
+        Capabilities capabilities,
+        java.util.function.Function<ClientCredentials, Bearer> bearer,
+        Rollover.Factory rollover,
+        Telemetry telemetry) {
+      this(
+          registration, settings, sweep, launcher, reaper, capabilities, bearer, rollover,
+          telemetry, null);
+    }
 
     /** The parts of a runner that ships its log nowhere. */
     public Parts(
@@ -72,7 +98,7 @@ public final class RunnerMain implements ControlSocket.Listener {
         Rollover.Factory rollover) {
       this(
           registration, settings, sweep, launcher, reaper, capabilities, bearer, rollover,
-          Telemetry.off());
+          Telemetry.off(), null);
     }
   }
 
@@ -99,6 +125,10 @@ public final class RunnerMain implements ControlSocket.Listener {
   private final CompletableFuture<Integer> exit = new CompletableFuture<>();
   private volatile ControlSocket socket;
   private volatile Rollover rollover;
+
+  /** Set once, by the first of the ways a runner learns it was deleted. */
+  private final java.util.concurrent.atomic.AtomicBoolean decommissioning =
+      new java.util.concurrent.atomic.AtomicBoolean();
 
   /**
    * For this runner's own status only. The host already answers every {@link Reserve} with {@link
@@ -203,6 +233,8 @@ public final class RunnerMain implements ControlSocket.Listener {
         reservations.drain();
         rollover.upgrade(upgrade);
       }
+      case Retire retire when retire.kind() == Retire.Kind.DELETED ->
+          decommission("the host deleted this runner (" + retire.reason() + ")");
       case Retire retire -> {
         if (rollover.retire(retire)) {
           workers.execute(this::leave);
@@ -255,6 +287,54 @@ public final class RunnerMain implements ControlSocket.Listener {
     }
     LOG.info("ci-runner exits: retired");
     exit.complete(ExitCode.OK);
+  }
+
+  @Override
+  public void onDeleted(String why) {
+    decommission(why);
+  }
+
+  /**
+   * This runner was deleted. On the loop, at once: not one more {@code Reserve}, and no redial —
+   * the host is about to close the socket, and a dial could only mint on a revoked client. Then,
+   * off the loop: every held run's containers removed (the host fails a deleted runner's runs on
+   * its side; its containers are this side's), a sweep for anything else under the runner's label,
+   * {@link Decommission#leave}, and exit 0.
+   */
+  private void decommission(String why) {
+    if (!decommissioning.compareAndSet(false, true)) {
+      return;
+    }
+    LOG.warnf("ci-runner decommissions itself: %s", why);
+    reservations.drain();
+    List<String> held = reservations.heldRuns();
+    ControlSocket s = socket;
+    if (s != null) {
+      s.stop();
+    }
+    Rollover r = rollover;
+    if (r != null) {
+      r.shutdown();
+    }
+    workers.execute(
+        () -> {
+          try {
+            for (String runId : held) {
+              parts.reaper().cancel(runId);
+            }
+            parts.sweep().sweep();
+            if (parts.decommission() != null) {
+              parts.decommission().leave();
+            } else if (r != null) {
+              r.leave();
+            }
+          } catch (RuntimeException e) {
+            LOG.warnf("ci-runner's decommission failed part way: %s", e.getMessage());
+          } finally {
+            LOG.info("ci-runner exits: decommissioned");
+            exit.complete(ExitCode.OK);
+          }
+        });
   }
 
   @Override

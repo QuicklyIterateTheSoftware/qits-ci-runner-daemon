@@ -87,6 +87,7 @@ class CiRunnerCodecTest {
                     + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 null),
             new Retire("superseded by 2026.928.120000"),
+            Retire.deleted("deleted by admin"),
             new Quarantined("3 runner-caused failures in a row", "2026-09-28T12:00:00Z"),
             new Reinstated("admin"),
             new Reinstated("healthcheck"));
@@ -133,9 +134,33 @@ class CiRunnerCodecTest {
         new Retire("superseded"), CiRunnerCodec.decode(Map.of("type", "retire", "reason", "superseded")));
 
     assertEquals(
+        Retire.Kind.SUPERSEDED,
+        ((Retire) CiRunnerCodec.decode(Map.of("type", "retire", "reason", "superseded"))).kind(),
+        "a Retire without a kind — every host before kinds — is a self-update's");
+
+    assertEquals(
         "1.0",
         CiRunnerCodec.encode(new Hello("1.0", 1, 1, null)).get("runnerVersion"),
         "Hello.runnerVersion is what the host compares with its pin");
+  }
+
+  /**
+   * A deleted runner's {@code Retire} adds {@code kind}, and only that: {@code reason} stays where an
+   * older runner reads it, and a kind this binary does not know is read as the safe one — a
+   * self-update's, which never removes a state volume.
+   */
+  @Test
+  void aDeletedRetireAddsItsKindAndAnUnknownKindReadsAsSuperseded() {
+    Map<String, Object> deleted = new LinkedHashMap<>();
+    deleted.put("type", "retire");
+    deleted.put("reason", "deleted");
+    deleted.put("kind", "DELETED");
+    assertEquals(deleted, CiRunnerCodec.encode(Retire.deleted("deleted")));
+    assertEquals(Retire.deleted("deleted"), CiRunnerCodec.decode(deleted));
+    assertEquals(
+        new Retire("x", Retire.Kind.SUPERSEDED),
+        CiRunnerCodec.decode(Map.of("type", "retire", "reason", "x", "kind", "SOMETHING_NEWER")));
+    assertEquals(Retire.Kind.SUPERSEDED, new Retire("x", null).kind());
   }
 
   /**

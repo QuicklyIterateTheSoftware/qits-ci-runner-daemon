@@ -20,6 +20,7 @@ package eu.wohlben.qits.cirunner.protocol;
  *   Cancel                                   (reap the whole run now)
  *   Released                                 (the run is closed; its slot is free)
  *   Upgrade → (drain) … Retire              (self-update; see Upgrade)
+ *   Retire{kind: DELETED}                    (the runner was deleted; it decommissions itself)
  *   Quarantined … Reinstated                 (host stops giving work, then resumes; see Quarantined)
  * </pre>
  *
@@ -39,11 +40,31 @@ public final class CiRunnerProtocol {
    * <p><b>Deliberately still 1 after {@link Upgrade} and {@link Retire} arrived.</b> An older runner
    * drops a frame of a type it does not know and carries on, which is all an unknown {@code Upgrade}
    * needs to be; a bump, on the other hand, would make every runner already installed exit on its
-   * next {@code Ack} — exactly the runners self-update exists to reach.
+   * next {@code Ack} — exactly the runners self-update exists to reach. {@link Retire}'s {@code
+   * kind} did not move it either: it is an added field, and a peer that does not know it reads the
+   * frame exactly as it did before (see {@link Retire}).
    */
   public static final int CAPABILITY_VERSION = 1;
 
   private CiRunnerProtocol() {}
+
+  /**
+   * The reasons qits-ci closes a runner's socket with, where the runner branches on one. Close code
+   * 1008 ("policy violation") for every one.
+   */
+  public static final class CloseReason {
+
+    /**
+     * The bearer on the upgrade is valid and names a client, and no runner here is registered with
+     * it — the runner was deleted (or re-registered elsewhere under a new client). Said only when the
+     * token HAD a subject: a token with none is a host that cannot read identity, which says nothing
+     * about the runner, and is closed {@code UNKNOWN_RUNNER} instead. A runner reading this reason
+     * decommissions itself, as on a {@link Retire.Kind#DELETED} retirement, and does not redial.
+     */
+    public static final String RUNNER_DELETED = "RUNNER_DELETED";
+
+    private CloseReason() {}
+  }
 
   /** The {@code "type"} discriminator values. */
   public static final class Type {
@@ -98,6 +119,9 @@ public final class CiRunnerProtocol {
     public static final String VERSION = "version";
     public static final String SHA256 = "sha256";
     public static final String REASON = "reason";
+
+    /** Retire's kind — added, not frozen, and absent for a SUPERSEDED retirement: see Retire. */
+    public static final String KIND = "kind";
 
     // Quarantined and Reinstated.
     public static final String SINCE = "since";

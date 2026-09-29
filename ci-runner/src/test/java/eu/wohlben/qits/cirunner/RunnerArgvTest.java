@@ -302,4 +302,42 @@ class RunnerArgvTest {
     assertThrows(IllegalArgumentException.class, () -> RunnerArgv.logs("docker", "--follow"));
     assertThrows(IllegalArgumentException.class, () -> RunnerArgv.exitState("docker", "-f"));
   }
+
+  @Test
+  void theDecommissionHelperIsTheRunnersOwnImageInHelperModeWithTheSocketAndNothingElse() {
+    assertEquals(
+        List.of(
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            "qits-ci-runner-c4374992-decommission",
+            "--network",
+            "none",
+            "--label",
+            "qits.ci.runner.decommission=c4374992-0000-4000-8000-000000000000",
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "-e",
+            "QITS_CI_RUNNER_DECOMMISSION=c4374992-0000-4000-8000-000000000000",
+            "-e",
+            "QITS_CI_RUNNER_DECOMMISSION_VOLUME=qits-ci-runner-state-c4374992",
+            "sha256:0123abcd"),
+        RunnerArgv.runDecommissioner(
+            "docker",
+            "c4374992-0000-4000-8000-000000000000",
+            "sha256:0123abcd",
+            "qits-ci-runner-state-c4374992"));
+    List<String> noVolume = RunnerArgv.runDecommissioner("docker", "r1", "sha256:0123abcd", null);
+    assertTrue(noVolume.stream().noneMatch(a -> a.contains("VOLUME")), noVolume::toString);
+    assertFalse(noVolume.contains("--rm"), "the helper removes itself only once it succeeded");
+    assertFalse(
+        noVolume.stream().anyMatch(a -> a.startsWith("qits.ci.runner.process") || a.startsWith("qits.ci.runner=")),
+        "a helper carrying a label it removes by would remove itself mid-job");
+    assertEquals(List.of("docker", "volume", "rm", "qits-ci-runner-state-r1"), RunnerArgv.volumeRm("docker", "qits-ci-runner-state-r1"));
+    assertThrows(IllegalArgumentException.class, () -> RunnerArgv.volumeRm("docker", "-f"));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> RunnerArgv.runDecommissioner("docker", "r1", "sha256:x", "--privileged"));
+  }
 }

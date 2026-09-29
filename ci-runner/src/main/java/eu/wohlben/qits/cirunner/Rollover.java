@@ -241,7 +241,9 @@ public final class Rollover {
       }
       try {
         if (state.equals("running") || state.equals("restarting")) {
-          state = awaitExit(id);
+          state =
+              awaitExit(
+                  docker, dockerBinary, id, settings.predecessorWaitMillis(), settings.pollMillis());
         }
         Docker.Result gone = docker.run(RunnerArgv.rm(dockerBinary, id));
         if (gone.ok()) {
@@ -260,8 +262,15 @@ public final class Rollover {
     executor.shutdownNow();
   }
 
-  private String awaitExit(String id) {
-    long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(settings.predecessorWaitMillis());
+  /**
+   * Wait up to {@code waitMillis} for a runner container to stop running, polling its state; answers
+   * the last state seen ({@code gone} when docker no longer knows it). Shared with {@link
+   * Decommission}, whose helper waits for the runner it removes the same way a successor waits for
+   * its predecessor.
+   */
+  static String awaitExit(
+      Docker docker, String dockerBinary, String id, long waitMillis, long pollMillis) {
+    long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitMillis);
     String state = "running";
     while (System.nanoTime() < deadline) {
       Docker.Result answered = docker.run(RunnerArgv.state(dockerBinary, id));
@@ -270,15 +279,15 @@ public final class Rollover {
         return state;
       }
       try {
-        Thread.sleep(settings.pollMillis());
+        Thread.sleep(pollMillis);
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
         return state;
       }
     }
     LOG.warnf(
-        "ci-runner's predecessor %s is still %s after %ds; removing it anyway",
-        id, state, settings.predecessorWaitMillis() / 1000);
+        "ci-runner container %s is still %s after %ds; removing it anyway",
+        id, state, waitMillis / 1000);
     return state;
   }
 

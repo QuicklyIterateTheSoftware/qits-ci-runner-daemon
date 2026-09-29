@@ -112,6 +112,10 @@ public final class CiRunnerCodec {
       case Retire m -> {
         map.put(Field.TYPE, Type.RETIRE);
         map.put(Field.REASON, m.reason());
+        // Only when it says something a SUPERSEDED retirement did not: see Retire.
+        if (m.kind() != Retire.Kind.SUPERSEDED) {
+          map.put(Field.KIND, m.kind().name());
+        }
       }
       case Quarantined m -> {
         map.put(Field.TYPE, Type.QUARANTINED);
@@ -187,7 +191,8 @@ public final class CiRunnerCodec {
         case Type.UPGRADE ->
             new Upgrade(
                 str(map, Field.VERSION), str(map, Field.IMAGE), str(map, Field.SHA256));
-        case Type.RETIRE -> new Retire(str(map, Field.REASON));
+        case Type.RETIRE ->
+            new Retire(str(map, Field.REASON), Retire.Kind.fromWire(str(map, Field.KIND)));
         case Type.QUARANTINED ->
             new Quarantined(str(map, Field.REASON), str(map, Field.SINCE));
         case Type.REINSTATED -> new Reinstated(str(map, Field.BY));

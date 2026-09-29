@@ -92,6 +92,11 @@ public final class Reservations {
     return held.size();
   }
 
+  /** The runs held now, in the order they were taken — a copy. */
+  public synchronized java.util.List<String> heldRuns() {
+    return java.util.List.copyOf(held);
+  }
+
   public synchronized boolean holds(String runId) {
     return held.contains(runId);
   }

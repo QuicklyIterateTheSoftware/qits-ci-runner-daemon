@@ -3,6 +3,7 @@ package eu.wohlben.qits.cirunner;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerCodec;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerDecodeException;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerMessage;
+import eu.wohlben.qits.cirunner.protocol.CiRunnerProtocol.CloseReason;
 import eu.wohlben.qits.cirunner.protocol.Heartbeat;
 import io.vertx.core.Context;
 import io.vertx.core.Future;
@@ -27,6 +28,25 @@ import org.jboss.logging.Logger;
  * and the only right response to a lost socket is to get it back; 500 ms doubling to a 30 s cap, reset
  * by a connection that succeeds. Every reconnect mints its bearer first, so a token that expired
  * while the socket was up is replaced rather than presented.
+ *
+ * <p><b>Forever ends at one thing: the platform saying this runner no longer exists.</b> A runner
+ * deleted while it was offline is never sent its {@code Retire}; it finds out on its next dial, and
+ * would otherwise redial for as long as its host is up. Two answers say it, and only two:
+ *
+ * <ul>
+ *   <li>qits-ci closes the socket 1008 {@link CloseReason#RUNNER_DELETED} — the host's own word that
+ *       the bearer is valid and no runner is registered with it. Believed at once.
+ *   <li>the token endpoint refuses the client with {@code invalid_client} ({@link
+ *       Bearer.ClientRefused}) — what a deleted runner's revoked client gets. Believed only as a
+ *       streak: every dial for at least {@link Settings#refusalConfirmMillis} and at least {@link
+ *       Settings#refusalConfirmAttempts} dials, with nothing else in between, since one such answer
+ *       could be an idp that is not ready yet.
+ * </ul>
+ *
+ * Everything else — a 502 from the edge, a refused connection, a timeout, a 401 on the upgrade, a
+ * 5xx from the idp, any other close — is the platform being down or restarting, breaks a streak, and
+ * is retried as it always was. On either answer the socket stops for good and tells its listener
+ * {@link Listener#onDeleted}.
  */
 public final class ControlSocket {
 
@@ -43,10 +63,39 @@ public final class ControlSocket {
 
     /** The session ended. The socket is already scheduling its own reconnect. */
     void onClosed();
+
+    /**
+     * The platform said this runner no longer exists (see the class javadoc). The socket has stopped
+     * for good and will not redial; {@code why} is for the log.
+     */
+    default void onDeleted(String why) {}
   }
 
-  /** Liveness and reconnect knobs. */
-  public record Settings(long heartbeatMillis, long initialBackoffMillis, long maxBackoffMillis) {}
+  /**
+   * Liveness and reconnect knobs, and how long a streak of {@code invalid_client} refusals must last
+   * before it is believed.
+   */
+  public record Settings(
+      long heartbeatMillis,
+      long initialBackoffMillis,
+      long maxBackoffMillis,
+      long refusalConfirmMillis,
+      int refusalConfirmAttempts) {
+
+    /** Five minutes and five dials: longer than any idp restart, short of a runner that lingers. */
+    public static final long DEFAULT_REFUSAL_CONFIRM_MILLIS = 300_000;
+
+    public static final int DEFAULT_REFUSAL_CONFIRM_ATTEMPTS = 5;
+
+    public Settings(long heartbeatMillis, long initialBackoffMillis, long maxBackoffMillis) {
+      this(
+          heartbeatMillis,
+          initialBackoffMillis,
+          maxBackoffMillis,
+          DEFAULT_REFUSAL_CONFIRM_MILLIS,
+          DEFAULT_REFUSAL_CONFIRM_ATTEMPTS);
+    }
+  }
 
   private final Vertx vertx;
   private final String url;
@@ -59,6 +108,11 @@ public final class ControlSocket {
   private volatile Context socketContext;
   private volatile boolean stopped;
   private long heartbeatTimer = -1;
+
+  /** The {@code invalid_client} streak: when it began (0 for none) and how many dials it holds. */
+  private long refusedSinceMillis;
+
+  private int refusals;
 
   public ControlSocket(
       Vertx vertx,
@@ -97,6 +151,9 @@ public final class ControlSocket {
         .onSuccess(this::onConnected)
         .onFailure(
             t -> {
+              if (confirmsDeletion(t)) {
+                return;
+              }
               long backoff = backoffFor(attempt);
               LOG.warnf(
                   "ci-runner could not connect to %s (attempt %d): %s; retrying in %dms",
@@ -105,12 +162,57 @@ public final class ControlSocket {
             });
   }
 
+  /**
+   * Count a failed dial toward the {@code invalid_client} streak, or break the streak; true when the
+   * streak is now long enough to believe, in which case the socket has stopped and the listener has
+   * been told.
+   */
+  private boolean confirmsDeletion(Throwable failure) {
+    if (!(failure instanceof Bearer.ClientRefused refused)) {
+      refusedSinceMillis = 0;
+      refusals = 0;
+      return false;
+    }
+    long now = System.currentTimeMillis();
+    if (refusals == 0) {
+      refusedSinceMillis = now;
+    }
+    refusals++;
+    long lasted = now - refusedSinceMillis;
+    if (refusals < settings.refusalConfirmAttempts() || lasted < settings.refusalConfirmMillis()) {
+      LOG.warnf(
+          "ci-runner's client was refused (%s), %d time(s) in a row over %ds; if it goes on for"
+              + " %ds this runner reads itself as deleted",
+          refused.getMessage(), refusals, lasted / 1000, settings.refusalConfirmMillis() / 1000);
+      return false;
+    }
+    deleted(
+        "the token endpoint has refused this runner's client for "
+            + lasted / 1000
+            + "s ("
+            + refusals
+            + " dials): "
+            + refused.getMessage());
+    return true;
+  }
+
+  /** The platform said this runner is gone: stop for good, then say so. Once. */
+  private void deleted(String why) {
+    if (stopped) {
+      return;
+    }
+    stop();
+    listener.onDeleted(why);
+  }
+
   long backoffFor(int attempt) {
     long backoff = settings.initialBackoffMillis() * (1L << Math.min(attempt, 20));
     return Math.min(settings.maxBackoffMillis(), Math.max(1, backoff));
   }
 
   private void onConnected(WebSocket ws) {
+    refusedSinceMillis = 0;
+    refusals = 0;
     socketContext = vertx.getOrCreateContext();
     ws.textMessageHandler(this::onFrame);
     ws.exceptionHandler(t -> LOG.debugf("ci-runner control socket error: %s", t.getMessage()));
@@ -118,6 +220,11 @@ public final class ControlSocket {
         v -> {
           socket = null;
           listener.onClosed();
+          if (isDeletedClose(ws.closeStatusCode(), ws.closeReason())) {
+            LOG.warnf("ci-runner's socket was closed %s by the host", CloseReason.RUNNER_DELETED);
+            deleted("the host closed the socket " + CloseReason.RUNNER_DELETED);
+            return;
+          }
           if (!stopped) {
             LOG.warnf("ci-runner lost its connection to %s; reconnecting", url);
             vertx.setTimer(settings.initialBackoffMillis(), id -> connect(0));
@@ -180,6 +287,11 @@ public final class ControlSocket {
     if (ws != null && !ws.isClosed()) {
       send(new Heartbeat());
     }
+  }
+
+  /** 1008 {@link CloseReason#RUNNER_DELETED}: the host's word that this runner does not exist. */
+  static boolean isDeletedClose(Short status, String reason) {
+    return status != null && status == 1008 && CloseReason.RUNNER_DELETED.equals(reason);
   }
 
   /**

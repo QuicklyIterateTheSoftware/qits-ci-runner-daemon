@@ -46,7 +46,34 @@ public class Main {
       System.out.println(CiRunnerBinary.VERSION);
       return;
     }
+    String decommission = System.getenv(RunnerArgv.DECOMMISSION_ENV);
+    if (decommission != null && !decommission.isBlank()) {
+      System.exit(decommissionHelper(decommission.strip()));
+    }
     Quarkus.run(RunnerApplication.class, args);
+  }
+
+  /**
+   * Helper mode: this process is a deleted runner's decommission helper ({@link Decommission}), not
+   * a runner. Like the version probe it runs before Quarkus, needs no other variable, and writes
+   * plain lines — the helper's {@code docker logs} is the whole record of what it did.
+   */
+  static int decommissionHelper(String runnerId) {
+    String binary = System.getenv("QITS_CI_RUNNER_DOCKER_BINARY");
+    String volume = System.getenv(RunnerArgv.DECOMMISSION_VOLUME_ENV);
+    try {
+      return Decommission.finish(
+          Docker.forking(120),
+          binary == null || binary.isBlank() ? "docker" : binary.strip(),
+          runnerId,
+          volume == null || volume.isBlank() ? null : volume.strip(),
+          SelfContainer.detect(),
+          Decommission.Settings.defaults(),
+          line -> System.out.println("qits-ci-runner decommission: " + line));
+    } catch (RuntimeException e) {
+      System.out.println("qits-ci-runner decommission: failed: " + e.getMessage());
+      return 1;
+    }
   }
 
   /** {@code 1} (or {@code true}) asks for the version; anything else, unset included, does not. */
@@ -192,7 +219,14 @@ public class Main {
                           Rollover.Settings.defaults(env.rolloverTimeoutSeconds()),
                           client,
                           held),
-                  telemetry));
+                  telemetry,
+                  new Decommission(
+                      docker,
+                      env.dockerBinary(),
+                      env.runnerId(),
+                      self,
+                      env.stateDir(),
+                      Decommission.Settings.defaults())));
       return runner.run();
     }
   }

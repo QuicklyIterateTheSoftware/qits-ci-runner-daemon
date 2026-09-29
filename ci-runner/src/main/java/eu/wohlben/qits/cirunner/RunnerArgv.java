@@ -56,6 +56,22 @@ public final class RunnerArgv {
   /** The one variable a successor is never given: the token was spent by the first start. */
   public static final String REGISTRATION_TOKEN_ENV = "QITS_CI_RUNNER_REGISTRATION_TOKEN";
 
+  /**
+   * The decommission helper's label, {@code qits.ci.runner.decommission=<runner id>} — deliberately
+   * neither {@link #PROCESS_LABEL} nor {@link #RUNNER_LABEL}: the helper removes every container
+   * carrying those two, and one that matched its own selection would remove itself mid-job.
+   */
+  public static final String DECOMMISSION_LABEL = "qits.ci.runner.decommission";
+
+  /**
+   * Set on the decommission helper, to the runner id it removes: the binary reads it before Quarkus
+   * starts and does that one job instead of being a runner (see {@link Decommission}).
+   */
+  public static final String DECOMMISSION_ENV = "QITS_CI_RUNNER_DECOMMISSION";
+
+  /** The state volume the decommission helper removes last; unset when there is none to remove. */
+  public static final String DECOMMISSION_VOLUME_ENV = "QITS_CI_RUNNER_DECOMMISSION_VOLUME";
+
   /** One line per runner container: id, version label and state. */
   static final String PROCESS_FORMAT = "{{.ID}}|{{.Label \"" + VERSION_LABEL + "\"}}|{{.State}}";
 
@@ -333,6 +349,53 @@ public final class RunnerArgv {
   public static List<String> noRestart(String dockerBinary, String containerId) {
     return List.of(
         dockerBinary, "update", "--restart=no", require(NAME, "container id", containerId));
+  }
+
+  /**
+   * The name of a runner's decommission helper, {@code qits-ci-runner-<first 8 of the id>-decommission}
+   * — one per runner, so two processes of one runner that are both told it was deleted (a rollover
+   * caught half way) start one helper between them, the second {@code docker run} failing on the name.
+   */
+  public static String decommissionerName(String runnerId) {
+    String id = require(NAME, "runner id", runnerId);
+    return CONTAINER_PREFIX + id.substring(0, Math.min(8, id.length())) + "-decommission";
+  }
+
+  /**
+   * The decommission helper's whole {@code docker run}: the runner's own image (by id — the one this
+   * process is running, so no pull and no registry login), its binary in helper mode through {@link
+   * #DECOMMISSION_ENV}, and the docker socket, which is all it needs. No restart policy and no
+   * network: it has one job, and talks only to the local daemon. <b>No {@code --rm} either</b>, by
+   * this class's rule: the helper removes its own container as its last step, only once everything
+   * else is gone, so a helper that failed is still there with its log to say why.
+   */
+  public static List<String> runDecommissioner(
+      String dockerBinary, String runnerId, String image, String volume) {
+    List<String> argv = new ArrayList<>();
+    argv.add(dockerBinary);
+    argv.add("run");
+    argv.add("-d");
+    argv.add("--name");
+    argv.add(decommissionerName(runnerId));
+    argv.add("--network");
+    argv.add("none");
+    argv.add("--label");
+    argv.add(DECOMMISSION_LABEL + "=" + require(NAME, "runner id", runnerId));
+    argv.add("-v");
+    argv.add(DOCKER_SOCKET + ":" + DOCKER_SOCKET);
+    argv.add("-e");
+    argv.add(DECOMMISSION_ENV + "=" + runnerId);
+    if (volume != null) {
+      argv.add("-e");
+      argv.add(DECOMMISSION_VOLUME_ENV + "=" + require(NAME, "volume", volume));
+    }
+    argv.add(requireImage(image));
+    return List.copyOf(argv);
+  }
+
+  /** Remove a named volume — the decommissioned runner's state, once no container uses it. */
+  public static List<String> volumeRm(String dockerBinary, String volume) {
+    return List.of(dockerBinary, "volume", "rm", require(NAME, "volume", volume));
   }
 
   /**

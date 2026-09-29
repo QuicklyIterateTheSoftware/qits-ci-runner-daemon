@@ -69,6 +69,9 @@ class RunnerMainTest {
   private Telemetry telemetry = Telemetry.off();
   private Rollover.Settings rolloverSettings = new Rollover.Settings(100, 400, 3_000, 3_000, 50);
 
+  /** How long an invalid_client streak must last to be believed; production's is five minutes. */
+  private long refusalConfirmMillis = 300_000;
+
   @BeforeEach
   void setUp() throws Exception {
     host = new FakeHost(vertx);
@@ -96,7 +99,8 @@ class RunnerMainTest {
             env,
             new RunnerMain.Parts(
                 new Registration(http, 5_000),
-                client -> new ControlSocket.Settings(heartbeatMillis, 50, 200),
+                client ->
+                    new ControlSocket.Settings(heartbeatMillis, 50, 200, refusalConfirmMillis, 3),
                 new BootSweep(d, docker.binary, "r1"),
                 new Launcher(d, docker.binary, "r1", new BuildPlane(d, docker.binary, "moby/buildkit:v0.33.0")),
                 new Reaper(d, docker.binary, "r1"),
@@ -112,7 +116,9 @@ class RunnerMainTest {
                         rolloverSettings,
                         client,
                         held),
-                telemetry));
+                telemetry,
+                new Decommission(
+                    d, docker.binary, "r1", self, state, new Decommission.Settings(200, 20, 2))));
     exit = CompletableFuture.supplyAsync(runner::run);
     return exit;
   }
@@ -714,6 +720,193 @@ class RunnerMainTest {
     assertEquals(ExitCode.OK, exit.get(10, TimeUnit.SECONDS));
     runner = null;
     assertTrue(has(docker.calls(), List.of("update", "--restart=no", SELF)), this::calls);
+    assertNoDecommission();
+  }
+
+  // --- a deleted runner ---------------------------------------------------------------------------
+
+  private static final List<String> DECOMMISSIONER_RUN =
+      List.of(
+          "run",
+          "-d",
+          "--name",
+          "qits-ci-runner-r1-decommission",
+          "--network",
+          "none",
+          "--label",
+          "qits.ci.runner.decommission=r1",
+          "-v",
+          "/var/run/docker.sock:/var/run/docker.sock",
+          "-e",
+          "QITS_CI_RUNNER_DECOMMISSION=r1",
+          "-e",
+          "QITS_CI_RUNNER_DECOMMISSION_VOLUME=qits-ci-runner-state-r1",
+          "sha256:old");
+
+  /**
+   * The runner's own container as {@code docker inspect} answers it, with the state volume mounted
+   * at this test's state directory — where {@link Decommission} looks for it.
+   */
+  private void containerWithStateVolume() throws Exception {
+    docker.answerFor(
+        "inspect",
+        SELF,
+        0,
+        new JsonArray()
+                .add(
+                    new JsonObject()
+                        .put("Id", SELF + "0".repeat(52))
+                        .put("Image", "sha256:old")
+                        .put(
+                            "Mounts",
+                            new JsonArray()
+                                .add(
+                                    new JsonObject()
+                                        .put("Type", "bind")
+                                        .put("Source", "/var/run/docker.sock")
+                                        .put("Destination", "/var/run/docker.sock"))
+                                .add(
+                                    new JsonObject()
+                                        .put("Type", "volume")
+                                        .put("Name", "qits-ci-runner-state-r1")
+                                        .put("Destination", state.toString())))
+                        .put(
+                            "HostConfig",
+                            new JsonObject()
+                                .put("RestartPolicy", Map.of("Name", "unless-stopped"))))
+                .encode()
+            + "\n",
+        "");
+  }
+
+  /** Neither the helper nor a volume removal: what a self-update's retirement must never do. */
+  private void assertNoDecommission() throws Exception {
+    assertFalse(docker.calls().contains(DECOMMISSIONER_RUN), this::calls);
+    assertTrue(
+        docker.calls().stream().noneMatch(c -> c.contains("volume") || String.join(" ", c).contains("DECOMMISSION")),
+        this::calls);
+    assertTrue(Files.exists(state.resolve("client.json")), "a successor dials with this client");
+  }
+
+  /** The decommission's docker half, in order: stay down, then the helper. */
+  private void assertDecommissioned() throws Exception {
+    List<List<String>> calls = docker.calls();
+    int stayDown = calls.indexOf(List.of("update", "--restart=no", SELF));
+    int helper = calls.indexOf(DECOMMISSIONER_RUN);
+    assertTrue(stayDown >= 0, this::calls);
+    assertTrue(helper > stayDown, this::calls);
+    assertFalse(Files.exists(state.resolve("client.json")), "the revoked client is forgotten");
+  }
+
+  @Test
+  void aDeletedRetireCancelsHeldRunsStaysDownAndHandsContainerAndVolumeToTheHelper()
+      throws Exception {
+    containerWithStateVolume();
+    docker.answerFor("ps", "label=qits.ci.runner.run=run-a", 0, "stepcontainer1\n", "");
+    holdARun();
+
+    host.send(Retire.deleted("deleted by admin"));
+    assertEquals(ExitCode.OK, exit.get(10, TimeUnit.SECONDS));
+    runner = null;
+    assertDecommissioned();
+    List<List<String>> calls = docker.calls();
+    assertTrue(
+        calls.indexOf(List.of("rm", "-f", "stepcontainer1"))
+            < calls.indexOf(List.of("update", "--restart=no", SELF)),
+        "the held run's containers go first: " + calls);
+    host.send(new Backlog(3));
+    Thread.sleep(200);
+    assertEquals(1, host.all(Reserve.class).size(), "a deleted runner takes no more work");
+    assertEquals(1, host.upgrades.get(), "and never dials again");
+  }
+
+  @Test
+  void aDeletedRetireMidRolloverStillDecommissionsWhereASupersededOneWouldBeIgnored()
+      throws Exception {
+    runnerContainer();
+    containerWithStateVolume();
+    holdARun();
+    host.send(new Upgrade(NEXT, IMAGE, DIGEST));
+    awaitCall(c -> has(c, List.of("pull", IMAGE)));
+
+    host.send(Retire.deleted("deleted by admin"));
+    assertEquals(ExitCode.OK, exit.get(10, TimeUnit.SECONDS));
+    runner = null;
+    assertDecommissioned();
+  }
+
+  @Test
+  void theHostClosingRunnerDeletedDecommissionsAtOnce() throws Exception {
+    containerWithStateVolume();
+    ackWith(1, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+
+    host.closeSocket(1008, CiRunnerProtocol.CloseReason.RUNNER_DELETED);
+    assertEquals(ExitCode.OK, exit.get(10, TimeUnit.SECONDS));
+    runner = null;
+    assertDecommissioned();
+    assertEquals(1, host.upgrades.get(), "no redial");
+  }
+
+  @Test
+  void anyOtherRefusalCloseIsRedialledAsEver() throws Exception {
+    containerWithStateVolume();
+    ackWith(1, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+
+    // UNKNOWN_RUNNER is also what a host that cannot read identity at all says: not the runner's fault.
+    host.closeSocket(1008, "UNKNOWN_RUNNER");
+    host.await(Hello.class, 2);
+    assertFalse(exit.isDone());
+    assertFalse(has(docker.calls(), List.of("update", "--restart=no", SELF)));
+  }
+
+  @Test
+  void aTokenEndpointThatKeepsRefusingTheClientIsReadAsDeletedAfterTheStreak() throws Exception {
+    refusalConfirmMillis = 400;
+    containerWithStateVolume();
+    host.tokenStatus = 401;
+    host.tokenErrorBody = "{\"error\":\"invalid_client\",\"error_description\":\"client authentication failed\"}";
+    start("t", 10_000);
+
+    assertEquals(ExitCode.OK, exit.get(15, TimeUnit.SECONDS));
+    runner = null;
+    assertDecommissioned();
+    assertTrue(host.tokenBodies.size() >= 3, "a streak, not one answer: " + host.tokenBodies.size());
+    assertEquals(0, host.upgrades.get());
+  }
+
+  @Test
+  void aTokenEndpointThatIsDownOrAnEdgeRefusalIsRetriedForever() throws Exception {
+    refusalConfirmMillis = 200;
+    containerWithStateVolume();
+    host.tokenStatus = 502;
+    host.tokenErrorBody = "Bad Gateway";
+    start("t", 10_000);
+
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (host.tokenBodies.size() < 6 && System.nanoTime() < deadline) {
+      Thread.sleep(20);
+    }
+    host.tokenStatus = 401;
+    host.tokenErrorBody = "{\"error\":\"client authentication is required\"}";
+    int before = host.tokenBodies.size();
+    deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (host.tokenBodies.size() < before + 6 && System.nanoTime() < deadline) {
+      Thread.sleep(20);
+    }
+    assertTrue(host.tokenBodies.size() >= before + 6, "still dialling");
+    assertFalse(exit.isDone(), "transient failures never decommission");
+    assertFalse(has(docker.calls(), List.of("update", "--restart=no", SELF)));
+    assertTrue(Files.exists(state.resolve("client.json")));
+
+    // And the platform coming back is a runner that connects as if nothing happened.
+    ackWith(1, 0);
+    host.tokenStatus = 200;
+    host.await(Hello.class);
+    assertFalse(exit.isDone());
   }
 
   @Test

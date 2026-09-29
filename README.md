@@ -237,7 +237,7 @@ first.
 
 | Code | Meaning | What to do |
 |---|---|---|
-| 0 | Retired by the CI. | Nothing — its successor, if any, is running. |
+| 0 | Retired by the CI, or decommissioned because the runner was deleted. | Nothing — its successor, if any, is running; a deleted runner's container and volume are removed by its helper (see "Deleting a runner"). |
 | 2 | A variable is missing or unparseable (the log line names it), or the runner is not registered and has no token. | Re-paste the install line. |
 | 3 | Registration could not reach the CI, or it answered 5xx. | Nothing — the restart is the retry. |
 | 4 | The CI speaks a protocol version this runner does not. | Re-paste the install line the CI currently hands out. |
@@ -273,6 +273,7 @@ container this is, what it was started with, and its successor). Every docker ca
     Released{run}                            the run is closed; its slot is free
     Upgrade{version, image, sha256?}         become this version: drain, pull, start a successor
     Retire{reason}                           a runner of the pinned version took over; exit 0
+    Retire{reason, kind: DELETED}            the runner was deleted: decommission (see "Deleting a runner")
     Quarantined{reason, since}               the CI stops giving this runner work (see "Quarantine and health checks")
     Reinstated{by}                           the quarantine is lifted
     Heartbeat                                every 10 s
@@ -281,6 +282,28 @@ container this is, what it was started with, and its successor). Every docker ca
 version is told to update, so their wire shape never changes (see `Upgrade`'s javadoc). A runner too
 old to know them drops them as frames of an unknown type and stays connected — the host keeps it
 draining, and a person re-pastes the install line (see "Updating").
+
+**`Retire.kind` is an added field.** It is only on the wire as `DELETED`; absent, or a value this
+binary does not know, reads as a self-update's retirement, which never removes a state volume. A
+runner too old to know it treats a deleted retirement as an operator's: it takes its restart policy
+away and exits 0, so its container stops for good but stays, exited, for a person to remove.
+
+### Deleting a runner
+
+Deleting a runner in the CI UI decommissions its container. A connected runner is sent `Retire{kind:
+DELETED}` before its client is revoked; it reserves nothing more, removes the containers of the runs
+it held and anything else under its label, deletes `client.json`, takes its own restart policy away,
+starts a helper container (`qits-ci-runner-<id8>-decommission`, its own image with the docker socket)
+and exits 0. The helper waits for every container labelled `qits.ci.runner.process=<id>` to exit,
+removes them, removes the state volume `qits-ci-runner-state-<id8>`, and removes itself; a helper that
+could not finish stays, exited, with its log.
+
+A runner that was offline when it was deleted finds out when it dials, and decommissions itself the
+same way. Two answers say it, and nothing else does: the CI closing the socket `1008
+RUNNER_DELETED` (the bearer is valid and no runner is registered with it), believed at once; or the
+token endpoint answering `invalid_client` on every dial for five minutes, believed only as that
+unbroken streak. A 5xx, an edge's 401, a refused connection, a timeout or any other close is the
+platform being down or restarting, and is redialled forever as before.
 
 **`Quarantined` and `Reinstated` are additive, not frozen.** A runner too old to know them drops
 them the same way — it still gets no work while quarantined, because the CI is the one answering

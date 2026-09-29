@@ -39,6 +39,9 @@ final class FakeHost implements AutoCloseable {
   volatile String registerBody;
   volatile String accessToken = "runner-access-token";
   volatile long expiresIn = 300;
+  /** When not 200, the token endpoint answers this status with {@link #tokenErrorBody}. */
+  volatile int tokenStatus = 200;
+  volatile String tokenErrorBody = "";
   volatile MultiMap upgradeHeaders;
   volatile ServerWebSocket socket;
   volatile BiConsumer<FakeHost, CiRunnerMessage> script = (h, m) -> {};
@@ -97,6 +100,10 @@ final class FakeHost implements AutoCloseable {
                       .end("{\"error\":\"client authentication is required\"}");
                   return;
                 }
+                if (tokenStatus != 200) {
+                  request.response().setStatusCode(tokenStatus).end(tokenErrorBody);
+                  return;
+                }
                 request
                     .response()
                     .end(
@@ -136,6 +143,11 @@ final class FakeHost implements AutoCloseable {
   /** A frame as text, bypassing the codec — what a host a version ahead of the runner sends. */
   void sendRaw(String json) {
     socket.writeTextMessage(json);
+  }
+
+  /** Close the current socket the way qits-ci does a refusal: a code and a reason. */
+  void closeSocket(int code, String reason) {
+    socket.close((short) code, reason);
   }
 
   void send(CiRunnerMessage message) {
