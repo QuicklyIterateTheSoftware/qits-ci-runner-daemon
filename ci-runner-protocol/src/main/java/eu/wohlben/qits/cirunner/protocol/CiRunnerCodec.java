@@ -42,6 +42,10 @@ public final class CiRunnerCodec {
         map.put(Field.CAPABILITY_VERSION, m.capabilityVersion());
         map.put(Field.SLOTS, m.slots());
         map.put(Field.CAPABILITIES, m.capabilities() == null ? null : capabilities(m.capabilities()));
+        // Only when there is something to say: a first connection's Hello is the frame it always was.
+        if (!m.heldRuns().isEmpty()) {
+          map.put(Field.HELD_RUNS, List.copyOf(m.heldRuns()));
+        }
       }
       case Reserve _ -> map.put(Field.TYPE, Type.RESERVE);
       case Launched m -> {
@@ -70,6 +74,9 @@ public final class CiRunnerCodec {
         map.put(
             Field.REGISTRY_MIRRORS,
             m.registryMirrors() == null ? null : new LinkedHashMap<>(m.registryMirrors()));
+        if (m.adoptedRuns() != null) {
+          map.put(Field.ADOPTED_RUNS, List.copyOf(m.adoptedRuns()));
+        }
       }
       case Backlog m -> {
         map.put(Field.TYPE, Type.BACKLOG);
@@ -149,7 +156,8 @@ public final class CiRunnerCodec {
                 str(map, Field.RUNNER_VERSION),
                 intVal(map, Field.CAPABILITY_VERSION),
                 intVal(map, Field.SLOTS),
-                capabilities(object(map, Field.CAPABILITIES)));
+                capabilities(object(map, Field.CAPABILITIES)),
+                stringList(map, Field.HELD_RUNS));
         case Type.RESERVE -> new Reserve();
         case Type.LAUNCHED ->
             new Launched(
@@ -167,7 +175,8 @@ public final class CiRunnerCodec {
             new Ack(
                 intVal(map, Field.CAPABILITY_VERSION),
                 intVal(map, Field.SLOTS),
-                nullableStringMap(map, Field.REGISTRY_MIRRORS));
+                nullableStringMap(map, Field.REGISTRY_MIRRORS),
+                map.get(Field.ADOPTED_RUNS) == null ? null : stringList(map, Field.ADOPTED_RUNS));
         case Type.BACKLOG -> new Backlog(intVal(map, Field.QUEUED));
         case Type.TAKE ->
             new Take(

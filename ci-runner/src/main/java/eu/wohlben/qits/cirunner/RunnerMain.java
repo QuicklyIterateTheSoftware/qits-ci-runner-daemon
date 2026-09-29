@@ -214,18 +214,21 @@ public final class RunnerMain implements ControlSocket.Listener {
 
   @Override
   public void onConnected() {
-    // Every session starts clean — BootSweep's javadoc argues why — and the sweep is docker work,
-    // so it runs off the loop and the Hello waits for it: the host must never Launch into a session
-    // whose leftovers are still being removed under the same labels.
+    // Every session starts without leftovers — BootSweep's javadoc argues why, and why the runs a
+    // lost socket left carried keep their containers — and the sweep is docker work, so it runs off
+    // the loop and the Hello waits for it: the host must never Launch into a session whose leftovers
+    // are still being removed under the same labels. The Hello claims what was carried.
     workers.execute(
         () -> {
-          parts.sweep().sweep();
+          List<String> carried = reservations.carried();
+          parts.sweep().sweep(carried);
           send(
               new Hello(
                   CiRunnerBinary.VERSION,
                   CiRunnerProtocol.CAPABILITY_VERSION,
                   env.slots(),
-                  parts.capabilities()));
+                  parts.capabilities(),
+                  carried));
         });
   }
 
@@ -289,6 +292,11 @@ public final class RunnerMain implements ControlSocket.Listener {
     }
     LOG.infof("ci-runner connected slots=%d", ack.slots());
     parts.launcher().onAck(ack.registryMirrors());
+    // Before the slots are counted: a carried run the host did not keep holds no slot any more.
+    for (String runId : reservations.settleCarried(ack.adoptedRuns())) {
+      LOG.infof("ci-runner's host did not keep carried run %s; cancelling it", runId);
+      workers.execute(() -> parts.reaper().cancel(runId));
+    }
     reserveIf(reservations.onAck(ack.slots()));
     // The first Ack is this version proven on the wire, so whatever this runner ran before it is
     // done with. Once per process (Rollover keeps the latch), and off the loop: it can wait a minute.
@@ -357,7 +365,7 @@ public final class RunnerMain implements ControlSocket.Listener {
             for (String runId : held) {
               parts.reaper().cancel(runId);
             }
-            parts.sweep().sweep();
+            parts.sweep().sweep(carried);
             if (parts.decommission() != null) {
               parts.decommission().leave();
             } else if (r != null) {
@@ -374,9 +382,10 @@ public final class RunnerMain implements ControlSocket.Listener {
 
   @Override
   public void onClosed() {
-    // The host fails every run this runner held; the next session's sweep removes their
-    // containers. Nothing is carried across — so a draining runner holds nothing any more either.
-    reservations.reset();
+    // The held runs are carried to the next session, whose Hello claims them and whose first Ack
+    // says which the host kept: it waits a short grace for this runner before failing them, so a
+    // blip no longer costs a running step.
+    reservations.suspend();
     Rollover r = rollover;
     if (r != null) {
       r.poke();

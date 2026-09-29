@@ -58,6 +58,35 @@ class BootSweepTest {
   }
 
   @Test
+  void aCarriedRunsContainersAreKeptAndEverythingElseIsSwept() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("ps+label_qits.ci.runner.run_run-a", 0, "live1\n", "")
+            .answer("ps", 0, "live1\nstray1\n", "");
+    int removed = new BootSweep(fake.docker(10), fake.binary, "r1").sweep(List.of("run-a"));
+
+    assertEquals(1, removed);
+    assertEquals(
+        List.of(
+            List.of(
+                "ps", "-aq", "--filter", "label=qits.ci.runner=r1", "--filter",
+                "label=qits.ci.runner.run=run-a"),
+            List.of("ps", "-aq", "--filter", "label=qits.ci.runner=r1"),
+            List.of("rm", "-f", "stray1")),
+        ReaperTest.withoutReads(fake.calls()));
+  }
+
+  @Test
+  void aCarriedRunThatCannotBeListedSweepsNothing() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("ps+label_qits.ci.runner.run_run-a", 1, "", "Cannot connect to the Docker daemon")
+            .answer("ps", 0, "live1\n", "");
+    assertEquals(0, new BootSweep(fake.docker(10), fake.binary, "r1").sweep(List.of("run-a")));
+    assertEquals(0, fake.calls("rm").size());
+  }
+
+  @Test
   void nothingListedIsNothingRemoved() throws Exception {
     FakeDocker fake = new FakeDocker(dir);
     assertEquals(0, new BootSweep(fake.docker(10), fake.binary, "r1").sweep());

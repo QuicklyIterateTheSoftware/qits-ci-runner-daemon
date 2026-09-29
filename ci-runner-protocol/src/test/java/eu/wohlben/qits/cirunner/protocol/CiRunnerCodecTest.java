@@ -1,6 +1,7 @@
 package eu.wohlben.qits.cirunner.protocol;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -55,6 +56,12 @@ class CiRunnerCodecTest {
                 CiRunnerProtocol.CAPABILITY_VERSION,
                 2,
                 new Capabilities(true, "amd64", "linux", Map.of("site", "home"))),
+            new Hello(
+                "2026.927.1",
+                CiRunnerProtocol.CAPABILITY_VERSION,
+                2,
+                new Capabilities(true, "amd64", "linux", Map.of()),
+                List.of("run-1", "run-2")),
             new Reserve(),
             new Launched("run-1", 2, "0123abcd"),
             new LaunchFailed("run-1", 2, "pull access denied"),
@@ -69,6 +76,8 @@ class CiRunnerCodecTest {
                     "mirror.dev.localhost:8080", "mirror.qits.wohlben.eu",
                     "registry.dev.localhost:8080", "registry.qits.wohlben.eu")),
             new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 3, Map.of()),
+            new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 3, null, List.of("run-1")),
+            new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 3, null, List.of()),
             new Backlog(7),
             new Take("run-1", "qits-ci-service", "main", "0123456789abcdef"),
             new Nothing(),
@@ -200,6 +209,33 @@ class CiRunnerCodecTest {
     assertEquals(
         new Ack(1, 2, null),
         CiRunnerCodec.decode(Map.of("type", "ack", "capabilityVersion", 1, "slots", 2)));
+  }
+
+  /**
+   * The runs carried across a lost socket are added fields, and each side's older peer is the case
+   * that matters: a first connection's {@code Hello} carries no key at all (the frame it always was),
+   * and an {@code Ack} with no {@code adoptedRuns} key — every host before the field — is {@code
+   * null}, "said nothing", which is not the same as "adopted none".
+   */
+  @Test
+  void heldAndAdoptedRunsAreAbsentUnlessSaidAndAnAbsentAdoptionIsNull() {
+    assertFalse(
+        CiRunnerCodec.encode(new Hello("v", 1, 1, null))
+            .containsKey(CiRunnerProtocol.Field.HELD_RUNS));
+    assertEquals(
+        List.of("run-1"),
+        CiRunnerCodec.encode(new Hello("v", 1, 1, null, List.of("run-1")))
+            .get(CiRunnerProtocol.Field.HELD_RUNS));
+    assertFalse(CiRunnerCodec.encode(new Ack(1, 2)).containsKey(CiRunnerProtocol.Field.ADOPTED_RUNS));
+    assertNull(
+        ((Ack) CiRunnerCodec.decode(Map.of("type", "ack", "capabilityVersion", 1, "slots", 2)))
+            .adoptedRuns());
+    assertEquals(
+        List.of(),
+        ((Ack)
+                CiRunnerCodec.decode(
+                    Map.of("type", "ack", "capabilityVersion", 1, "slots", 2, "adoptedRuns", List.of())))
+            .adoptedRuns());
   }
 
   @Test

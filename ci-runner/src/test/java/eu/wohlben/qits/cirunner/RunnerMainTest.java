@@ -383,24 +383,85 @@ class RunnerMainTest {
     assertEquals(ExitCode.CAPABILITY_MISMATCH, code);
   }
 
+  /**
+   * A host that does not adopt — every host before {@code adoptedRuns}, whose {@code Ack} carries no
+   * such key — gets what it always got: the carried run is claimed, then forgotten and cancelled, so
+   * nothing carries across it.
+   */
   @Test
-  void aLostSocketIsRedialledAndTheNewSessionStartsClean() throws Exception {
+  void aLostSocketIsRedialledAndACarriedRunTheHostDidNotKeepIsCancelled() throws Exception {
     ackWith(2, 0);
     start("t", 10_000);
     host.await(Hello.class, 1);
     host.send(new Backlog(1));
     host.await(Reserve.class);
     host.send(new Take("run-a", "repo", "main", "abc"));
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-    while (runner.reservations().held() == 0 && System.nanoTime() < deadline) {
-      Thread.sleep(20);
-    }
+    awaitHeld(1);
     host.socket.close();
 
     host.await(Hello.class, 2);
     assertEquals(2, host.upgrades.get());
-    assertEquals(0, runner.reservations().held(), "the host failed run-a; nothing carries across");
+    assertEquals(List.of("run-a"), host.all(Hello.class).get(1).heldRuns(), "the Hello claims it");
+    awaitHeld(0);
+    awaitCall(
+        List.of("ps", "-aq", "--filter", "label=qits.ci.runner=r1", "--filter",
+            "label=qits.ci.runner.run=run-a"),
+        "the run the host did not keep is cancelled");
     assertTrue(docker.calls("ps").size() >= 2, "each session sweeps first");
+  }
+
+  /**
+   * qits-545: a socket that drops mid-step no longer costs the step. The run is carried across,
+   * its container survives the reconnect's sweep, the Hello claims it and — adopted by the host —
+   * it is still held, so the slot stays counted and the next Reap for it is answered as ever.
+   */
+  @Test
+  void aCarriedRunTheHostAdoptsKeepsItsContainerAndItsSlot() throws Exception {
+    host.script =
+        (h, message) -> {
+          if (message instanceof Hello hello) {
+            h.send(new Ack(CiRunnerProtocol.CAPABILITY_VERSION, 2, null, hello.heldRuns()));
+          }
+        };
+    start("t", 10_000);
+    host.await(Hello.class, 1);
+    host.send(new Backlog(1));
+    host.await(Reserve.class);
+    host.send(new Take("run-a", "repo", "main", "abc"));
+    awaitHeld(1);
+    // The run's container, and a stray from before; the reconnect's sweep must tell them apart.
+    docker.answer("ps+label_qits.ci.runner.run_run-a", 0, "live1\n", "");
+    docker.answer("ps", 0, "live1\nstray1\n", "");
+    host.socket.close();
+
+    host.await(Hello.class, 2);
+    assertEquals(List.of("run-a"), host.all(Hello.class).get(1).heldRuns());
+    awaitCall(List.of("rm", "-f", "stray1"), "the stray is swept");
+    Thread.sleep(300);
+    assertEquals(1, runner.reservations().held(), "the adopted run still holds its slot");
+    assertFalse(
+        docker.calls().contains(List.of("rm", "-f", "live1")), "the carried run's container lives");
+    List<List<String>> calls = docker.calls();
+    assertEquals(
+        1,
+        calls.stream().filter(c -> c.contains("label=qits.ci.runner.run=run-a")).count(),
+        "listed once, by the sweep — never cancelled: " + calls);
+  }
+
+  private void awaitHeld(int held) throws InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (runner.reservations().held() != held && System.nanoTime() < deadline) {
+      Thread.sleep(20);
+    }
+    assertEquals(held, runner.reservations().held());
+  }
+
+  private void awaitCall(List<String> call, String why) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (!docker.calls().contains(call) && System.nanoTime() < deadline) {
+      Thread.sleep(20);
+    }
+    assertTrue(docker.calls().contains(call), why + ": " + docker.calls());
   }
 
   @Test

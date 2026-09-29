@@ -2,6 +2,7 @@ package eu.wohlben.qits.cirunner.protocol;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -26,8 +27,18 @@ import java.util.Map;
  * the last one); an empty map is a deliberate "nothing to rewrite", not the same thing. Either way a
  * runner on a version older than this field simply does not read it: adding a field is not a
  * capability bump, so {@link CiRunnerProtocol#CAPABILITY_VERSION} does not move for this.
+ *
+ * <p><b>{@link #adoptedRuns} answers {@link Hello#heldRuns()}</b>: which of the runs the runner
+ * carried across a lost socket the host is still driving, and so kept for it. Only the {@code Ack}
+ * that answers a {@code Hello} carries it; {@code null} there — a host older than the field — adopts
+ * nothing, and a runner cancels every run it carried, as it did before it carried any. A re-sent
+ * {@code Ack} (a slot change) carries {@code null} too, and says nothing about held runs at all.
  */
-public record Ack(int capabilityVersion, int slots, Map<String, String> registryMirrors)
+public record Ack(
+    int capabilityVersion,
+    int slots,
+    Map<String, String> registryMirrors,
+    List<String> adoptedRuns)
     implements CiRunnerMessage {
 
   /**
@@ -40,6 +51,12 @@ public record Ack(int capabilityVersion, int slots, Map<String, String> registry
         registryMirrors == null
             ? null
             : Collections.unmodifiableMap(new LinkedHashMap<>(registryMirrors));
+    adoptedRuns = adoptedRuns == null ? null : List.copyOf(adoptedRuns);
+  }
+
+  /** An {@code Ack} that says nothing about held runs — every one before the field, and a re-send. */
+  public Ack(int capabilityVersion, int slots, Map<String, String> registryMirrors) {
+    this(capabilityVersion, slots, registryMirrors, null);
   }
 
   /** Before qits-ci sent registry mirrors at all: no map, same as any other host on this wire. */

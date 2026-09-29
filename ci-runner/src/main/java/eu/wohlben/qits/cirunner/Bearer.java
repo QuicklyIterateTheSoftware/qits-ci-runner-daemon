@@ -20,7 +20,10 @@ import java.util.function.LongSupplier;
  * <p>Never on disk and never logged — the file on disk is the client, from which a token can always
  * be minted again, and a token written anywhere would be one more copy of a credential to protect.
  * It is minted when the socket dials, which is the only thing it is for; a socket that stays up
- * outlives the token harmlessly, because the edge checks it at the upgrade and not per frame.
+ * outlives the token harmlessly, because the edge and qits-ci check it at the upgrade and not per
+ * frame. That second half needs qits-ci's side of it: Quarkus closes a WebSocket when its bearer's
+ * {@code exp} passes, and until qits-ci opted its two sockets out, every runner dropped its socket
+ * exactly one token lifetime (an hour) after it connected (qits-545).
  */
 public final class Bearer {
 

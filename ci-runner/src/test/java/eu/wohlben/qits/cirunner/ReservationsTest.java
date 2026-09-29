@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /** The reserve gate: a free slot, a positive backlog, and nothing outstanding — all three. */
@@ -78,15 +79,34 @@ class ReservationsTest {
   }
 
   @Test
-  void aClosedSessionForgetsEverythingItHeld() {
+  void aClosedSessionCarriesWhatItHeldUntilTheHostSaysWhichItKept() {
     Reservations r = new Reservations();
     r.onAck(2);
-    r.onBacklog(2);
+    r.onBacklog(3);
     r.onTake("a");
-    r.reset();
-    assertEquals(0, r.held());
+    r.onTake("b");
+    r.suspend();
+    assertEquals(List.of("a", "b"), r.carried(), "claimed by the next Hello");
+    assertEquals(2, r.held(), "and still held while the host decides");
     assertFalse(r.onBacklog(5), "no Ack yet in the new session, so no slots");
-    assertTrue(r.onAck(2), "the new session's Ack, with the backlog already known");
+
+    assertEquals(List.of("b"), r.settleCarried(List.of("a")), "the one the host did not keep");
+    assertEquals(1, r.held());
+    assertEquals(List.of(), r.carried());
+    assertTrue(r.onAck(2), "the new session's Ack: one slot still free, the backlog known");
+    assertEquals(List.of(), r.settleCarried(null), "only the first Ack of a session settles");
+    assertEquals(1, r.held());
+  }
+
+  @Test
+  void aHostThatSaysNothingAboutCarriedRunsKeptNone() {
+    Reservations r = new Reservations();
+    r.onAck(1);
+    r.onBacklog(1);
+    r.onTake("a");
+    r.suspend();
+    assertEquals(List.of("a"), r.settleCarried(null));
+    assertEquals(0, r.held());
   }
 
   @Test
@@ -99,7 +119,7 @@ class ReservationsTest {
     assertFalse(r.onBacklog(3), "no Reserve after the Upgrade");
     assertFalse(r.onReleased("a"), "a freed slot is not refilled");
     assertEquals(0, r.held());
-    r.reset();
+    r.suspend();
     assertFalse(r.onAck(2));
     assertFalse(r.onBacklog(9));
     assertTrue(r.draining());

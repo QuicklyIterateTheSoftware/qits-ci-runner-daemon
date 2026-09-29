@@ -103,6 +103,12 @@ public final class CiRunnerProtocol {
     public static final String SLOTS = "slots";
     public static final String QUEUED = "queued";
     public static final String REGISTRY_MIRRORS = "registryMirrors";
+
+    /** Hello's runs carried across a lost socket, and Ack's answer to them — added, see Hello. */
+    public static final String HELD_RUNS = "heldRuns";
+
+    public static final String ADOPTED_RUNS = "adoptedRuns";
+
     public static final String RUN_ID = "runId";
     public static final String REPO_NAME = "repoName";
     public static final String BRANCH = "branch";

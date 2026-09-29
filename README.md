@@ -353,9 +353,14 @@ password-shaped redacted. A reap sends it to qits-ci as `Reaped.logTail`, led by
 A cancel or a sweep has no answer to carry it in and writes it to the runner's own log. A docker
 that cannot produce the logs is a null tail, never a failed removal.
 
-**Every session starts clean.** When the connection drops, qits-ci fails the runs this runner held,
-so on every (re)connect the runner removes all containers carrying its own label
-`qits.ci.runner=<id>` — and only those — before it says `Hello`.
+**Every session starts without leftovers, and a reconnect keeps what it still holds.** On every
+(re)connect the runner removes the containers carrying its own label `qits.ci.runner=<id>` — and
+only those — before it says `Hello`, except the containers of runs it held when the connection
+dropped. Those runs are *carried*: the `Hello` claims them (`heldRuns`), qits-ci keeps the ones it is
+still driving (it waits a short grace for the runner to come back before failing them) and names them
+in its `Ack` (`adoptedRuns`), and the runner cancels every carried run the host did not keep — which
+is all of them against a qits-ci older than the field. So a dropped socket no longer costs a running
+step, and a process restart (which carries nothing) still starts from an empty label.
 
 **The build plane.** A step whose spec sets `buildPlane` (qits-ci's `docker: true` or `build: true`)
 or binds the docker socket gets the runner's own `qits-ci-runner-buildkitd` (privileged, state volume

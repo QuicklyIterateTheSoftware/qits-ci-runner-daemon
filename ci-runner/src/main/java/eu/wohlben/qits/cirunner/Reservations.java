@@ -36,7 +36,13 @@ public final class Reservations {
   private boolean draining;
   private final Set<String> held = new LinkedHashSet<>();
 
-  /** A new session: the host's cap, and nothing held — see {@link BootSweep} for why nothing. */
+  /**
+   * The runs held when the socket dropped, until the next session's first {@code Ack} says which of
+   * them the host kept ({@link #settleCarried}); empty on a first connection and once settled.
+   */
+  private final Set<String> carried = new LinkedHashSet<>();
+
+  /** The host's cap. Held runs are kept: a re-sent {@code Ack} is only a new number. */
   public synchronized boolean onAck(int slots) {
     this.slots = Math.max(0, slots);
     return decide();
@@ -63,6 +69,7 @@ public final class Reservations {
 
   public synchronized boolean onReleased(String runId) {
     held.remove(runId);
+    carried.remove(runId);
     parked = false;
     return decide();
   }
@@ -77,15 +84,39 @@ public final class Reservations {
   }
 
   /**
-   * The socket closed: every held run is the host's to fail, and nothing is outstanding. Draining
-   * survives it — a reconnect does not un-ask the upgrade.
+   * The socket closed: no slots and nothing outstanding until the next {@code Ack}, and every held
+   * run is <b>carried</b> — kept, containers and all, for the host to adopt on the next connection
+   * (see {@link BootSweep}). Draining survives it too — a reconnect does not un-ask the upgrade.
    */
-  public synchronized void reset() {
+  public synchronized void suspend() {
     slots = 0;
     backlog = 0;
     outstanding = false;
     parked = false;
-    held.clear();
+    carried.addAll(held);
+  }
+
+  /** The runs to claim in the next {@code Hello}, in the order they were taken — a copy. */
+  public synchronized java.util.List<String> carried() {
+    return java.util.List.copyOf(carried);
+  }
+
+  /**
+   * The host answered the claim: keep the carried runs it {@code adopted} and forget the rest,
+   * which are returned for their containers to be removed. {@code null} — a host that never read
+   * the claim — adopts nothing. Only the first {@code Ack} of a session settles; after it there is
+   * nothing carried and this returns nothing.
+   */
+  public synchronized java.util.List<String> settleCarried(java.util.List<String> adopted) {
+    java.util.List<String> dropped = new java.util.ArrayList<>();
+    for (String runId : carried) {
+      if (adopted == null || !adopted.contains(runId)) {
+        held.remove(runId);
+        dropped.add(runId);
+      }
+    }
+    carried.clear();
+    return dropped;
   }
 
   public synchronized int held() {
