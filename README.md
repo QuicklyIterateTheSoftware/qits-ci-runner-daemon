@@ -229,6 +229,27 @@ and how many went is shipped as a line of its own), leave in batches every five 
 the collector refuses is dropped rather than retried — one log line says shipping stopped, one that it
 resumed. Lines logged before the runner has credentials (its registration) are sent once it does.
 
+### Disk
+
+The runner cleans up after itself; there is nothing to configure, and it never runs `docker system
+prune` or `docker image prune -a` — the machine may hold things that are not the runner's.
+
+- **Runner images.** After an update the new runner removes the old version's container and then its
+  image (`<registry>/qits/qits-ci-runner:<old version>`). Every housekeeping pass also removes any
+  other `qits/qits-ci-runner` image no container uses — leftovers from before this existed. The
+  image the runner is running is never removed.
+- **Step images.** Every image a step was launched from is recorded, with when it was last used, in
+  `images.json` in the state volume. Every 6 hours (and once after start), a recorded image unused
+  for 7 days that no container was created from is removed, then `docker image prune -f` removes
+  dangling layers. Images the runner never launched are not touched. A pass never removes an image
+  while a launch is in flight; that image waits for the next pass.
+- **Build cache.** buildkitd's own garbage collector (`qits-buildkitd-state`): cache unused for 72h
+  goes, and the total is kept under 20GB, least recently used first. It runs when the builder starts
+  and after each build. A builder an older runner started without this policy is replaced once, when
+  no run is held; its cache volume is kept.
+
+If a removal fails (docker refuses an image still in use, say), the runner logs it and carries on.
+
 ### Exit codes
 
 A healthy runner never exits; docker restarts it after any of these. The one clean exit, 0, is a

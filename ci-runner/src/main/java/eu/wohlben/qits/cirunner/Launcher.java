@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
 import org.jboss.logging.Logger;
 
 /**
@@ -64,12 +65,34 @@ public final class Launcher {
   /** The last map actually applied, so a repeat {@code Ack} (a slots-only change, say) logs nothing. */
   private volatile Map<String, String> appliedRegistryMirrors = Map.of();
 
+  /** Every step image a launch used, for {@link Housekeeping}'s sweep — see {@link StepImages}. */
+  private final StepImages stepImages;
+
+  /** A launcher whose image record lives in memory only. */
   public Launcher(Docker docker, String dockerBinary, String runnerId, BuildPlane buildPlane) {
+    this(docker, dockerBinary, runnerId, buildPlane, StepImages.inMemory());
+  }
+
+  public Launcher(
+      Docker docker,
+      String dockerBinary,
+      String runnerId,
+      BuildPlane buildPlane,
+      StepImages stepImages) {
     this.docker = docker;
     this.dockerBinary = dockerBinary;
     this.runnerId = runnerId;
     this.envBuildPlane = buildPlane;
     this.buildPlane = new AtomicReference<>(buildPlane);
+    this.stepImages = stepImages;
+  }
+
+  /**
+   * Replace the node's builder when it runs a configuration other than the current one — {@link
+   * BuildPlane#refreshIfStale}. For {@link Housekeeping}, which calls it only while no run is held.
+   */
+  public void refreshBuilderIfStale() {
+    buildPlane.get().refreshIfStale();
   }
 
   /**
@@ -121,11 +144,20 @@ public final class Launcher {
         return failed(launch, "the build plane is not available: " + builderFailure.get());
       }
     }
-    Optional<String> pullFailure = ensureImage(spec);
-    if (pullFailure.isPresent()) {
-      return failed(launch, pullFailure.get());
+    // From the inspect to the run, the image sweep keeps its hands off — see StepImages.
+    Docker.Result started;
+    Lock launching = stepImages.launching();
+    launching.lock();
+    try {
+      Optional<String> pullFailure = ensureImage(spec);
+      if (pullFailure.isPresent()) {
+        return failed(launch, pullFailure.get());
+      }
+      stepImages.used(spec.image());
+      started = docker.run(run);
+    } finally {
+      launching.unlock();
     }
-    Docker.Result started = docker.run(run);
     if (!started.ok()) {
       return failed(launch, "docker run failed: " + started.detail());
     }

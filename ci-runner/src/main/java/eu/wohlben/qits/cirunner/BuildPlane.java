@@ -224,6 +224,51 @@ public final class BuildPlane {
   }
 
   /**
+   * The worker table: {@code networkMode} (see {@link #renderToml}) and the build cache's garbage
+   * collection — the only thing that bounds {@link #STATE_VOLUME}, which otherwise grows with every
+   * build the node ever ran.
+   *
+   * <p><b>The keys are buildkit v0.33.0's</b> ({@code cmd/buildkitd/config/config.go}: {@code
+   * GCConfig.GC} is {@code gc}, {@code GCPolicy} is {@code gcpolicy}, and a policy's fields are
+   * {@code all}, {@code filters}, {@code keepDuration}, {@code reservedSpace}, {@code maxUsedSpace},
+   * {@code minFreeSpace}; {@code docs/buildkitd.toml.md} documents the same). {@code gckeepstorage}
+   * and a policy's {@code keepBytes} are the deprecated spellings of {@code reservedSpace} and are
+   * not used. The worker-level size keys are not written either: {@code getGCPolicy} in {@code
+   * cmd/buildkitd/main.go} reads them only to build its default policies when {@code gcpolicy} is
+   * empty, which it is not here.
+   *
+   * <p><b>Why these policies.</b> {@code gc = true} alone gives buildkit's defaults ({@code
+   * DefaultGCPolicy}, {@code DetectDefaultGCCap}): keep anything used in the last 60 days, up to
+   * 80% of the disk or 100GB — a cap sized for a dedicated build machine, not for a node somebody
+   * also uses. So, evaluated in order on each GC (a second after buildkitd starts and after every
+   * solve, throttled to once a minute — {@code control/control.go}):
+   *
+   * <ol>
+   *   <li>anything not used for 72h goes, whatever the total — three days keeps a repository's cache
+   *       warm across a weekend without a pipeline, and the rest is the next build's to rebuild;
+   *   <li>above 20GB, the least recently used goes first until the total is under it — room for the
+   *       layers of a few Quarkus/native builds, and small against a runner node's disk;
+   *   <li>the same cap with {@code all = true}, which also reaches buildkit's internal records, as
+   *       buildkit's own last default policy does, for when the second was not enough.
+   * </ol>
+   *
+   * Sizes are {@code go-units} {@code RAMInBytes}, so {@code 20GB} is 20 GiB.
+   */
+  static final String WORKER_TOML =
+      """
+      [worker.oci]
+        networkMode = "host"
+        gc = true
+      [[worker.oci.gcpolicy]]
+        keepDuration = "72h"
+      [[worker.oci.gcpolicy]]
+        maxUsedSpace = "20GB"
+      [[worker.oci.gcpolicy]]
+        all = true
+        maxUsedSpace = "20GB"
+      """;
+
+  /**
    * buildkitd.toml, rendered rather than shipped — PlatformBuildkit's {@code buildkitdToml}, with its
    * measured reasons. {@code networkMode = "host"} puts a {@code RUN} in buildkitd's own network
    * namespace, which is on the runner network and on every step network it joined, so an in-network
@@ -249,7 +294,7 @@ public final class BuildPlane {
     }
     hosts.addAll(http);
     StringBuilder out =
-        new StringBuilder("[worker.oci]\n  networkMode = \"host\"\n  gc = true\n")
+        new StringBuilder(WORKER_TOML)
             .append("[dns]\n  nameservers = [\"").append(EXEC_NAMESERVER).append("\"]\n");
     for (String host : hosts) {
       out.append("[registry.\"").append(host).append("\"]\n");
@@ -296,14 +341,7 @@ public final class BuildPlane {
       return Optional.of("could not create " + STATE_VOLUME + ": " + volume.detail());
     }
     String stamp = stamp();
-    Docker.Result inspected =
-        docker.run(
-            List.of(
-                dockerBinary,
-                "inspect",
-                "--format",
-                "{{index .Config.Labels \"" + STAMP_LABEL + "\"}}|{{.State.Status}}",
-                CONTAINER));
+    Docker.Result inspected = docker.run(inspectStamp());
     if (inspected.ok()) {
       String[] answer = inspected.stdout().strip().split("\\|", 2);
       String running = answer[0];
@@ -337,6 +375,38 @@ public final class BuildPlane {
     }
     LOG.infof("ci-runner builder %s is up on %s", CONTAINER, image);
     return connect(stepNetwork);
+  }
+
+  /**
+   * Replace the builder now if it is this runner's and was started under another configuration —
+   * an older runner's toml without the GC policy, say. {@link #ensure} does the same on the next
+   * build, but a node that builds rarely would keep an unbounded cache until then; this lets a
+   * housekeeping pass converge it while the runner holds no run (the caller's guarantee), so no
+   * build is cut off. No builder, or somebody else's under the name, is left exactly as it is: this
+   * never creates one a node has not needed yet.
+   */
+  public synchronized void refreshIfStale() {
+    Docker.Result inspected = docker.run(inspectStamp());
+    if (!inspected.ok()) {
+      return;
+    }
+    String running = inspected.stdout().strip().split("\\|", 2)[0];
+    String stamp = stamp();
+    if (running.isEmpty() || running.equals("<no value>") || running.equals(stamp)) {
+      return;
+    }
+    LOG.infof("ci-runner refreshes its idle builder: stamp %s, configured %s", running, stamp);
+    ensure(null)
+        .ifPresent(failure -> LOG.warnf("ci-runner could not refresh its builder: %s", failure));
+  }
+
+  private List<String> inspectStamp() {
+    return List.of(
+        dockerBinary,
+        "inspect",
+        "--format",
+        "{{index .Config.Labels \"" + STAMP_LABEL + "\"}}|{{.State.Status}}",
+        CONTAINER);
   }
 
   /**

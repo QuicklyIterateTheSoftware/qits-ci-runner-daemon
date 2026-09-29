@@ -195,6 +195,12 @@ public class Main {
               env.buildkitHttpRegistries(),
               env.buildkitRegistryMirrors(),
               caBundleCandidates(self));
+      // The record of step images lives beside client.json, so a successor inherits it.
+      StepImages stepImages =
+          new StepImages(
+              env.stateDir().resolve(StepImages.FILE), System::currentTimeMillis);
+      Launcher launcher =
+          new Launcher(docker, env.dockerBinary(), env.runnerId(), buildPlane, stepImages);
       RunnerMain runner =
           new RunnerMain(
               vertx,
@@ -205,7 +211,7 @@ public class Main {
                       new ControlSocket.Settings(
                           heartbeatMillis, initialBackoffMillis, maxBackoffMillis),
                   new BootSweep(docker, env.dockerBinary(), env.runnerId()),
-                  new Launcher(docker, env.dockerBinary(), env.runnerId(), buildPlane),
+                  launcher,
                   new Reaper(docker, env.dockerBinary(), env.runnerId()),
                   capabilities,
                   client -> new Bearer(http, client, System::currentTimeMillis),
@@ -226,7 +232,14 @@ public class Main {
                       env.runnerId(),
                       self,
                       env.stateDir(),
-                      Decommission.Settings.defaults())));
+                      Decommission.Settings.defaults()),
+                  new Housekeeping(
+                      docker,
+                      env.dockerBinary(),
+                      new RunnerImages(docker, env.dockerBinary(), self),
+                      stepImages,
+                      launcher::refreshBuilderIfStale,
+                      Housekeeping.Settings.defaults())));
       return runner.run();
     }
   }

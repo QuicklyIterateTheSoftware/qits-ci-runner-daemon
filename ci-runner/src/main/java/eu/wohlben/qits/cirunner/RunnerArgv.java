@@ -72,8 +72,16 @@ public final class RunnerArgv {
   /** The state volume the decommission helper removes last; unset when there is none to remove. */
   public static final String DECOMMISSION_VOLUME_ENV = "QITS_CI_RUNNER_DECOMMISSION_VOLUME";
 
-  /** One line per runner container: id, version label and state. */
-  static final String PROCESS_FORMAT = "{{.ID}}|{{.Label \"" + VERSION_LABEL + "\"}}|{{.State}}";
+  /**
+   * One line per runner container: id, version label, state and image — the last so a successor can
+   * remove its predecessor's image once the container is gone. A reader of the first three fields
+   * (the decommission helper) is unaffected by the fourth.
+   */
+  static final String PROCESS_FORMAT =
+      "{{.ID}}|{{.Label \"" + VERSION_LABEL + "\"}}|{{.State}}|{{.Image}}";
+
+  /** The repository every runner image is published under, whatever registry host precedes it. */
+  public static final String RUNNER_REPOSITORY = "qits/qits-ci-runner";
 
   private static final Pattern NAME = Pattern.compile("[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}");
   private static final Pattern IMAGE = Pattern.compile("[a-zA-Z0-9][a-zA-Z0-9._:/@+-]{0,511}");
@@ -233,6 +241,48 @@ public final class RunnerArgv {
     configured.add(configDir.toString());
     configured.addAll(argv.subList(1, argv.size()));
     return List.copyOf(configured);
+  }
+
+  /**
+   * Untag, and delete when it was the last tag, an image — never {@code -f}: docker refusing an
+   * image a container still uses is the belt every garbage collection here leans on.
+   */
+  public static List<String> imageRm(String dockerBinary, String image) {
+    return List.of(dockerBinary, "image", "rm", requireImage(image));
+  }
+
+  /** Every container, running or not, created from {@code image} (an id or a reference). */
+  public static List<String> psAncestor(String dockerBinary, String image) {
+    return List.of(
+        dockerBinary, "ps", "-a", "-q", "--filter", "ancestor=" + requireImage(image));
+  }
+
+  /**
+   * Every image on the host as {@code repository:tag|full id}, one per line — read by the leftover
+   * runner-image sweep, which picks out {@link #RUNNER_REPOSITORY} itself rather than trusting a
+   * {@code reference} filter's glob to span a registry host with a port.
+   */
+  public static List<String> imageList(String dockerBinary) {
+    return List.of(
+        dockerBinary, "image", "ls", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}}|{{.ID}}");
+  }
+
+  /**
+   * Dangling images only. Never {@code -a}: that would delete every image no container uses, and
+   * the host is somebody's machine holding things this runner never pulled.
+   */
+  public static List<String> imagePruneDangling(String dockerBinary) {
+    return List.of(dockerBinary, "image", "prune", "-f");
+  }
+
+  /** The full image id a container runs — how the runner knows which image is its own. */
+  public static List<String> containerImage(String dockerBinary, String containerId) {
+    return List.of(
+        dockerBinary,
+        "inspect",
+        "--format",
+        "{{.Image}}",
+        require(NAME, "container id", containerId));
   }
 
   /** Remove it, running or not. Every teardown ends here. */

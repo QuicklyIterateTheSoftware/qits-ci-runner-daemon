@@ -124,4 +124,83 @@ class RolloverTest {
                         || call.contains(BuildPlane.NETWORK)),
         () -> "rollover must never touch the shared builder: " + calls);
   }
+
+  private static final String OLD_IMAGE = "registry.example:5000/qits/qits-ci-runner:2026.1.0";
+
+  private Rollover inContainer(FakeDocker docker) {
+    return new Rollover(
+        docker.docker(10),
+        docker.binary,
+        "r1",
+        "2026.1.1",
+        Optional.of("0123456789ab"),
+        new Rollover.Settings(100, 400, 3_000, 3_000, 50),
+        CLIENT,
+        NO_RUNS_HELD);
+  }
+
+  @Test
+  void theSuccessorRemovesItsPredecessorsImageOnceTheContainerIsGone(@TempDir Path dir)
+      throws Exception {
+    FakeDocker docker = new FakeDocker(dir);
+    docker.answerFor(
+        "ps",
+        "label=qits.ci.runner.process=r1",
+        0,
+        "0123456789ab|2026.1.1|running|registry.example:5000/qits/qits-ci-runner:2026.1.1\n"
+            + "aaaaaaaaaaaa|2026.1.0|exited|" + OLD_IMAGE + "\n",
+        "");
+    docker.answerFor("inspect", "0123456789ab", 0, "sha256:own\n", "");
+    docker.answerFor("image-inspect", OLD_IMAGE, 0, "sha256:old\n", "");
+
+    inContainer(docker).removePredecessors();
+
+    List<List<String>> calls = docker.calls();
+    int removedContainer = calls.indexOf(List.of("rm", "-f", "aaaaaaaaaaaa"));
+    int removedImage = calls.indexOf(List.of("image", "rm", OLD_IMAGE));
+    assertTrue(removedContainer >= 0, calls::toString);
+    assertTrue(removedImage > removedContainer, () -> "the image goes after its container: " + calls);
+    assertTrue(
+        calls.contains(List.of("ps", "-a", "-q", "--filter", "ancestor=sha256:old")),
+        () -> "it asks whether any container still uses it: " + calls);
+    assertEquals(1, docker.calls("image").stream().filter(c -> c.get(1).equals("rm")).count());
+  }
+
+  @Test
+  void aPredecessorImageDockerRefusesToRemoveIsLeftAndNothingFails(@TempDir Path dir)
+      throws Exception {
+    FakeDocker docker = new FakeDocker(dir);
+    docker.answerFor(
+        "ps",
+        "label=qits.ci.runner.process=r1",
+        0,
+        "aaaaaaaaaaaa|2026.1.0|exited|" + OLD_IMAGE + "\n",
+        "");
+    docker.answerFor("inspect", "0123456789ab", 0, "sha256:own\n", "");
+    docker.answerFor("image-inspect", OLD_IMAGE, 0, "sha256:old\n", "");
+    docker.answer("image-rm", 1, "", "conflict: unable to remove repository reference");
+
+    inContainer(docker).removePredecessors();
+
+    assertTrue(docker.calls().contains(List.of("image", "rm", OLD_IMAGE)));
+  }
+
+  @Test
+  void aPredecessorOnTheRunningImageKeepsIt(@TempDir Path dir) throws Exception {
+    FakeDocker docker = new FakeDocker(dir);
+    docker.answerFor(
+        "ps",
+        "label=qits.ci.runner.process=r1",
+        0,
+        "aaaaaaaaaaaa|2026.1.0|exited|" + OLD_IMAGE + "\n",
+        "");
+    docker.answerFor("inspect", "0123456789ab", 0, "sha256:same\n", "");
+    docker.answerFor("image-inspect", OLD_IMAGE, 0, "sha256:same\n", "");
+
+    inContainer(docker).removePredecessors();
+
+    assertTrue(docker.calls().contains(List.of("rm", "-f", "aaaaaaaaaaaa")));
+    assertFalse(docker.calls().stream().anyMatch(c -> c.size() > 1 && c.get(1).equals("rm")
+        && c.get(0).equals("image")), () -> "never the running image: " + docker.callsQuietly("image"));
+  }
 }

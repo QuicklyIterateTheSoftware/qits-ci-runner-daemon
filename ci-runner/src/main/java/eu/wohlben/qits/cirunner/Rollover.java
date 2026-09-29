@@ -8,9 +8,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -32,7 +34,8 @@ import org.jboss.logging.Logger;
  *   no Retire within the watch       → docker rm -f the successor, stay draining, retry later
  * </pre>
  *
- * and, in the successor, after its first {@code Ack}: remove the exited predecessors.
+ * and, in the successor, after its first {@code Ack}: remove the exited predecessors, then their
+ * images ({@link RunnerImages}) — a node would otherwise keep every runner version it ever ran.
  *
  * <p><b>The rollback is the watch.</b> A successor that cannot connect — a bad image, a protocol it
  * gets wrong, a host that refuses it — never says {@code Hello} in the pinned version, so the host
@@ -82,6 +85,7 @@ public final class Rollover {
   private final ClientCredentials client;
   private final IntSupplier held;
   private final AtomicBoolean predecessorsSwept = new AtomicBoolean();
+  private final RunnerImages runnerImages;
 
   private final ScheduledExecutorService executor =
       Executors.newSingleThreadScheduledExecutor(
@@ -115,6 +119,7 @@ public final class Rollover {
     this.settings = settings;
     this.client = client;
     this.held = held;
+    this.runnerImages = new RunnerImages(docker, dockerBinary, self);
   }
 
   /**
@@ -218,6 +223,10 @@ public final class Rollover {
    * A predecessor still running is given {@link Settings#predecessorWaitMillis} to exit on its own
    * {@code Retire} first. Never this process's own container: its version label is this process's
    * version, and it is also recognised by id.
+   *
+   * <p>Then each removed predecessor's image, best-effort and only once every container is gone —
+   * two predecessors of the same version share one. {@link RunnerImages#remove} never removes the
+   * image this process runs or one any container still uses; a refusal is a log line.
    */
   public void removePredecessors() {
     if (!predecessorsSwept.compareAndSet(false, true)) {
@@ -228,6 +237,7 @@ public final class Rollover {
       LOG.warnf("ci-runner could not list its predecessors: %s", listed.detail());
       return;
     }
+    Set<String> images = new LinkedHashSet<>();
     for (String line : listed.stdout().split("\\R")) {
       String[] fields = line.strip().split("\\|", -1);
       if (fields.length < 3 || fields[0].isBlank()) {
@@ -248,12 +258,18 @@ public final class Rollover {
         Docker.Result gone = docker.run(RunnerArgv.rm(dockerBinary, id));
         if (gone.ok()) {
           LOG.infof("ci-runner removed its predecessor %s (%s, %s)", id, version, state);
+          if (fields.length > 3 && !fields[3].isBlank()) {
+            images.add(fields[3].strip());
+          }
         } else {
           LOG.warnf("ci-runner could not remove its predecessor %s: %s", id, gone.detail());
         }
       } catch (IllegalArgumentException notAnId) {
         LOG.warnf("ci-runner ignored a line docker ps answered: %s", notAnId.getMessage());
       }
+    }
+    for (String image : images) {
+      runnerImages.remove(image, "its predecessor's image");
     }
   }
 

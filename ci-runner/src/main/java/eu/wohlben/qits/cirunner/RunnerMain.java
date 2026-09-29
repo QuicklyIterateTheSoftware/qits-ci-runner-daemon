@@ -65,7 +65,25 @@ public final class RunnerMain implements ControlSocket.Listener {
       java.util.function.Function<ClientCredentials, Bearer> bearer,
       Rollover.Factory rollover,
       Telemetry telemetry,
-      Decommission decommission) {
+      Decommission decommission,
+      Housekeeping housekeeping) {
+
+    /** The parts of a runner that collects none of its disk's garbage. */
+    public Parts(
+        Registration registration,
+        java.util.function.Function<ClientCredentials, ControlSocket.Settings> settings,
+        BootSweep sweep,
+        Launcher launcher,
+        Reaper reaper,
+        Capabilities capabilities,
+        java.util.function.Function<ClientCredentials, Bearer> bearer,
+        Rollover.Factory rollover,
+        Telemetry telemetry,
+        Decommission decommission) {
+      this(
+          registration, settings, sweep, launcher, reaper, capabilities, bearer, rollover,
+          telemetry, decommission, null);
+    }
 
     /**
      * The parts of a runner with no way to remove itself: told it was deleted, it still stops for
@@ -83,7 +101,7 @@ public final class RunnerMain implements ControlSocket.Listener {
         Telemetry telemetry) {
       this(
           registration, settings, sweep, launcher, reaper, capabilities, bearer, rollover,
-          telemetry, null);
+          telemetry, null, null);
     }
 
     /** The parts of a runner that ships its log nowhere. */
@@ -98,7 +116,7 @@ public final class RunnerMain implements ControlSocket.Listener {
         Rollover.Factory rollover) {
       this(
           registration, settings, sweep, launcher, reaper, capabilities, bearer, rollover,
-          Telemetry.off(), null);
+          Telemetry.off(), null, null);
     }
   }
 
@@ -180,6 +198,9 @@ public final class RunnerMain implements ControlSocket.Listener {
       Rollover r = rollover;
       if (r != null) {
         r.shutdown();
+      }
+      if (parts.housekeeping() != null) {
+        parts.housekeeping().shutdown();
       }
       workers.shutdownNow();
       parts.telemetry().stop(TELEMETRY_LAST_WORDS_MILLIS);
@@ -271,7 +292,18 @@ public final class RunnerMain implements ControlSocket.Listener {
     reserveIf(reservations.onAck(ack.slots()));
     // The first Ack is this version proven on the wire, so whatever this runner ran before it is
     // done with. Once per process (Rollover keeps the latch), and off the loop: it can wait a minute.
-    workers.execute(rollover::removePredecessors);
+    // Housekeeping starts after it, so the leftover-image sweep finds the predecessors gone; it too
+    // is once per process, and runs on its own thread from there.
+    workers.execute(
+        () -> {
+          try {
+            rollover.removePredecessors();
+          } finally {
+            if (parts.housekeeping() != null && !decommissioning.get()) {
+              parts.housekeeping().start(reservations::held);
+            }
+          }
+        });
   }
 
   /**
@@ -315,6 +347,9 @@ public final class RunnerMain implements ControlSocket.Listener {
     Rollover r = rollover;
     if (r != null) {
       r.shutdown();
+    }
+    if (parts.housekeeping() != null) {
+      parts.housekeeping().shutdown();
     }
     workers.execute(
         () -> {

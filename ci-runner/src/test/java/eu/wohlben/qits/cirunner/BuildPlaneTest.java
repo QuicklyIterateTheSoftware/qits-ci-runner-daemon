@@ -110,6 +110,36 @@ class BuildPlaneTest {
             List.of("network", "connect", "qits-net", "qits-ci-runner-buildkitd")));
   }
 
+  @Test
+  void anIdleBuilderOnAStaleConfigurationIsReplacedByTheRefresh() throws Exception {
+    FakeDocker fake = new FakeDocker(dir);
+    BuildPlane plane = new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0");
+    // Started by an older runner, whose toml had no GC policy.
+    fake.answer("inspect", 0, "0123456789abcdef|running\n", "");
+
+    plane.refreshIfStale();
+
+    assertEquals(List.of(List.of("rm", "-f", "qits-ci-runner-buildkitd")), fake.calls("rm"));
+    List<String> run = fake.calls("run").getFirst();
+    assertTrue(run.contains("qits.ci.runner.buildkitd=" + plane.stamp()));
+    assertTrue(run.get(run.indexOf("-e") + 1).contains("[[worker.oci.gcpolicy]]"));
+  }
+
+  @Test
+  void theRefreshNeverCreatesABuilderNorTouchesACurrentOrForeignOne() throws Exception {
+    FakeDocker fake = new FakeDocker(dir).answer("inspect", 1, "", "No such object");
+    BuildPlane plane = new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0");
+    plane.refreshIfStale();
+    fake.answer("inspect", 0, plane.stamp() + "|running\n", "");
+    plane.refreshIfStale();
+    fake.answer("inspect", 0, "<no value>|running\n", "");
+    plane.refreshIfStale();
+
+    List<List<String>> calls = fake.calls();
+    assertEquals(3, calls.size(), () -> "only the three inspects: " + calls);
+    assertEquals(3, fake.calls("inspect").size());
+  }
+
   /** What a runner on the platform host's qits-net sets — qits-containers' values, abridged. */
   private static final List<String> HTTP = List.of("dev-qits-artifacts:8080", "dev-qits-platform-mirror:8080");
 
@@ -120,12 +150,20 @@ class BuildPlaneTest {
           "dev-qits-artifacts:8080=dev-qits-artifacts:8080");
 
   @Test
-  void anUnconfiguredBuilderRendersOnlyTheNamespaceAndDnsSettings() {
+  void anUnconfiguredBuilderRendersOnlyTheNamespaceGcAndDnsSettings() {
+    // Literal, not WORKER_TOML: this is the test that pins the GC policy buildkitd is given.
     assertEquals(
         """
         [worker.oci]
           networkMode = "host"
           gc = true
+        [[worker.oci.gcpolicy]]
+          keepDuration = "72h"
+        [[worker.oci.gcpolicy]]
+          maxUsedSpace = "20GB"
+        [[worker.oci.gcpolicy]]
+          all = true
+          maxUsedSpace = "20GB"
         [dns]
           nameservers = ["127.0.0.11"]
         """,
@@ -135,10 +173,8 @@ class BuildPlaneTest {
   @Test
   void mirrorsAndPlainHttpRegistriesRenderOneTablePerHost() {
     assertEquals(
-        """
-        [worker.oci]
-          networkMode = "host"
-          gc = true
+        BuildPlane.WORKER_TOML
+            + """
         [dns]
           nameservers = ["127.0.0.11"]
         [registry."registry.dev.localhost:8080"]
@@ -263,10 +299,8 @@ class BuildPlaneTest {
     BuildPlane rewritten = plane.withRegistryMirrors(ACK_MIRRORS);
 
     assertEquals(
-        """
-        [worker.oci]
-          networkMode = "host"
-          gc = true
+        BuildPlane.WORKER_TOML
+            + """
         [dns]
           nameservers = ["127.0.0.11"]
         [registry."mirror.dev.localhost:8080"]
@@ -286,10 +320,8 @@ class BuildPlaneTest {
     BuildPlane rewritten = plane.withRegistryMirrors(ACK_MIRRORS);
 
     assertEquals(
-        """
-        [worker.oci]
-          networkMode = "host"
-          gc = true
+        BuildPlane.WORKER_TOML
+            + """
         [dns]
           nameservers = ["127.0.0.11"]
         [registry."docker.io"]

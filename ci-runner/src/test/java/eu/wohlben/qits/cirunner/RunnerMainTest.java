@@ -972,7 +972,7 @@ class RunnerMainTest {
                 "ps",
                 "-a",
                 "--format",
-                "{{.ID}}|{{.Label \"qits.ci.runner.version\"}}|{{.State}}",
+                "{{.ID}}|{{.Label \"qits.ci.runner.version\"}}|{{.State}}|{{.Image}}",
                 "--filter",
                 "label=qits.ci.runner.process=r1")),
         this::calls);

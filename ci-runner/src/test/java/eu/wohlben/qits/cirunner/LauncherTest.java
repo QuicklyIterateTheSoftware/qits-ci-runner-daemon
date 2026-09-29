@@ -379,4 +379,48 @@ class LauncherTest {
     assertEquals("as is", Launcher.redact("as is", null));
     assertEquals("not json", Launcher.redact("not json", "{broken"));
   }
+
+  @Test
+  void aLaunchRecordsTheImageItUsedInTheStateDirectory() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir.resolve("docker"))
+            .answer("image-inspect", 1, "", "No such image")
+            .answer("run", 0, "cid\n", "");
+    Path file = dir.resolve("state").resolve(StepImages.FILE);
+    StepImages images = new StepImages(file, () -> 1_234L);
+    Launcher launcher =
+        new Launcher(
+            fake.docker(10),
+            fake.binary,
+            "r1",
+            new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0"),
+            images);
+
+    assertInstanceOf(
+        Launched.class, launcher.launch(new Launch("run-1", 0, WorkloadSpec.of("alpine:3", "c0"))));
+
+    assertEquals(Map.of("alpine:3", 1_234L), images.record());
+    assertEquals(
+        Map.of("alpine:3", 1_234L), new StepImages(file, () -> 0L).record(), "and on disk");
+  }
+
+  @Test
+  void aLaunchWhosePullFailsRecordsNothing() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir.resolve("docker"))
+            .answer("image-inspect", 1, "", "")
+            .answer("pull", 1, "", "manifest unknown");
+    StepImages images = new StepImages(null, () -> 1L);
+    Launcher launcher =
+        new Launcher(
+            fake.docker(10),
+            fake.binary,
+            "r1",
+            new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0"),
+            images);
+
+    assertInstanceOf(
+        LaunchFailed.class, launcher.launch(new Launch("run-1", 0, WorkloadSpec.of("nope:1", "c0"))));
+    assertEquals(Map.of(), images.record());
+  }
 }
