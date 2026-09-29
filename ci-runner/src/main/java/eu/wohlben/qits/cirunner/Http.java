@@ -1,6 +1,7 @@
 package eu.wohlben.qits.cirunner;
 
 import io.vertx.core.Future;
+import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpClient;
@@ -18,10 +19,12 @@ public final class Http {
   /** A response, whatever its status. Callers branch on {@link #status()}; nothing throws on 4xx. */
   public record Response(int status, String body) {}
 
+  private final Vertx vertx;
   private final HttpClient client;
   private final long timeoutMillis;
 
   public Http(Vertx vertx, long timeoutMillis) {
+    this.vertx = vertx;
     this.client = vertx.createHttpClient();
     this.timeoutMillis = timeoutMillis;
   }
@@ -40,12 +43,29 @@ public final class Http {
             .setConnectTimeout(timeoutMillis)
             .setIdleTimeout(timeoutMillis);
     headers.forEach(options::addHeader);
-    return client
-        .request(options)
-        .compose(request -> request.send(body))
-        .compose(
-            response ->
-                response.body().map(buffer -> new Response(response.statusCode(), buffer.toString())));
+    // The whole exchange runs on a Vert.x context, never on the caller's thread. Called from any
+    // other thread (the registration and the first dial run on the application's main thread), the
+    // chain's continuations are attached from that thread: on a busy host the response can arrive
+    // and END on the event loop before response.body() is attached, and a body asked for after the
+    // end never completes — no failure, no timeout, a dial that hangs forever. Measured: the token
+    // request answered by the host and never seen by the runner, ~1 in 2 RunnerMainTest runs under
+    // CPU load. On the context, each continuation is attached before the loop can deliver the next
+    // event, so the body handler is always in place before the end arrives.
+    Promise<Response> answer = Promise.promise();
+    vertx
+        .getOrCreateContext()
+        .runOnContext(
+            v ->
+                client
+                    .request(options)
+                    .compose(request -> request.send(body))
+                    .compose(
+                        response ->
+                            response
+                                .body()
+                                .map(buffer -> new Response(response.statusCode(), buffer.toString())))
+                    .onComplete(answer));
+    return answer.future();
   }
 
   public void close() {
