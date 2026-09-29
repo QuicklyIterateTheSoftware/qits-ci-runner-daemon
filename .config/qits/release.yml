@@ -55,6 +55,18 @@ release-request:
       : "${zlib_url:?docker/Dockerfile.musl-builder declares no ARG ZLIB_URL}"
       musl_url="$maven_root${musl_url#*/artifacts/maven/maven}"
       zlib_url="$maven_root${zlib_url#*/artifacts/maven/maven}"
+      # ON THE EDGE PLANE THE TARBALL `ADD` NEEDS THE RUN'S TOKEN (qits-441): there $maven_root is
+      # the public registry, which answers an anonymous read 401. BuildKit's HTTP source sends a
+      # session secret named HTTP_AUTH_TOKEN_<url host> as `Authorization: Bearer`, so the secret is
+      # keyed by exactly that host and passed only when the step holds $QITS_TOKEN, which qits-ci
+      # sets on the EDGE plane alone. On the INTERNAL plane nothing is passed and the in-network read
+      # stays anonymous, as qits-ci intends. docker/Dockerfile.musl-builder's header has the
+      # long form.
+      tarball_auth=
+      if [ -n "${QITS_TOKEN:-}" ]; then
+        tarball_host=$(printf '%s\n' "$maven_root" | sed -E 's|^[A-Za-z]+://||; s|[/:?].*$||')
+        tarball_auth="--secret id=HTTP_AUTH_TOKEN_$tarball_host,env=QITS_TOKEN"
+      fi
       # THE TOOLCHAIN TAG IS A HASH OF ITS INPUTS, NOT qits-ci-daemon's BARE `jdk-25`. Two
       # repositories now carry a copy of docker/Dockerfile.musl-builder, and a shared mutable tag is
       # exactly what one's push could overwrite between the other's push and its pull. The hash is
@@ -68,6 +80,7 @@ release-request:
         --opt filename=Dockerfile.musl-builder \
         --opt build-arg:MUSL_URL="$musl_url" \
         --opt build-arg:ZLIB_URL="$zlib_url" \
+        $tarball_auth \
         --output "type=image,name=$builder,push=true"
       # BYTE-IDENTICAL TO THE RELEASE SLOT'S IMAGE BUILD but for the output. Change one, change the
       # other. The image is exported as a docker archive and loaded into the step's own docker rather
@@ -126,6 +139,12 @@ release:
       : "${zlib_url:?docker/Dockerfile.musl-builder declares no ARG ZLIB_URL}"
       musl_url="$maven_root${musl_url#*/artifacts/maven/maven}"
       zlib_url="$maven_root${zlib_url#*/artifacts/maven/maven}"
+      # The QA step's tarball credential, byte for byte: the run's token on the EDGE plane only.
+      tarball_auth=
+      if [ -n "${QITS_TOKEN:-}" ]; then
+        tarball_host=$(printf '%s\n' "$maven_root" | sed -E 's|^[A-Za-z]+://||; s|[/:?].*$||')
+        tarball_auth="--secret id=HTTP_AUTH_TOKEN_$tarball_host,env=QITS_TOKEN"
+      fi
       # The QA step's derivation, byte for byte: the same tree names the same tag in both phases,
       # so BUILDER_IMAGE is the same string and the native compile below is a cache hit.
       builder_tag=$( { cat docker/Dockerfile.musl-builder; printf '%s\n%s\n' "$musl_url" "$zlib_url"; } | sha256sum | cut -c1-16 )
@@ -135,6 +154,7 @@ release:
         --opt filename=Dockerfile.musl-builder \
         --opt build-arg:MUSL_URL="$musl_url" \
         --opt build-arg:ZLIB_URL="$zlib_url" \
+        $tarball_auth \
         --output "type=image,name=$builder,push=true"
       # THE QA PIPELINE'S IMAGE BUILD, BYTE FOR BYTE but for the output: `push=true` IS THE PUBLISH.
       # The image goes from the builder straight to the registry and never enters a local image
