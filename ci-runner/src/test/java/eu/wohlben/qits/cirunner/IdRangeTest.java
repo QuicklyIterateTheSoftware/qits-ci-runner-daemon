@@ -28,7 +28,7 @@ class IdRangeTest {
   void aHostOutsideAnyUserNamespaceMapsTheWholeIdSpace() throws IOException {
     maps("         0          0 4294967295\n", "         0          0 4294967295\n");
     assertEquals(Long.valueOf(Capabilities.FULL_ID_RANGE), IdRange.read(proc));
-    assertFalse(Main.capabilities(proc).narrowIdRange());
+    assertFalse(Main.capabilities(proc, true).narrowIdRange());
   }
 
   @Test
@@ -36,7 +36,7 @@ class IdRangeTest {
     // rootless dockerd: its own uid as 0, then the user's /etc/subuid range.
     maps("0 1000 1\n1 100000 65536\n", "0 1000 1\n1 100000 65536\n");
     assertEquals(Long.valueOf(65537L), IdRange.read(proc));
-    Capabilities caps = Main.capabilities(proc);
+    Capabilities caps = Main.capabilities(proc, true);
     assertEquals(Long.valueOf(65537L), caps.idRange());
     assertTrue(caps.narrowIdRange());
   }
@@ -56,7 +56,7 @@ class IdRangeTest {
     assertNull(IdRange.read(proc), "a count that is not a number");
     maps("0 0\n", "0 0 4294967295\n");
     assertNull(IdRange.read(proc), "a line short of its count");
-    assertNull(Main.capabilities(proc).idRange());
+    assertNull(Main.capabilities(proc, true).idRange());
   }
 
   @Test

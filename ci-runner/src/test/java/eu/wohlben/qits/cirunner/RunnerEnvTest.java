@@ -1,6 +1,7 @@
 package eu.wohlben.qits.cirunner;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -170,5 +171,26 @@ class RunnerEnvTest {
                 () -> RunnerEnv.telemetryUrl("collector:4318", "https://ci.qits.example.eu"))
             .getMessage()
             .startsWith("QITS_CI_RUNNER_TELEMETRY_URL"));
+  }
+
+  @Test
+  void selfUpdateDefaultsOnAndParsesTrueOrFalse() throws Exception {
+    assertTrue(selfUpdate(null));
+    assertTrue(selfUpdate(" "));
+    assertTrue(selfUpdate("true"));
+    assertTrue(selfUpdate("1"));
+    assertFalse(selfUpdate("false"));
+    assertFalse(selfUpdate("FALSE"));
+    assertFalse(selfUpdate("0"));
+    RunnerEnv.Invalid invalid =
+        assertThrows(
+            RunnerEnv.Invalid.class, () -> selfUpdate("no"));
+    assertEquals("QITS_CI_RUNNER_SELF_UPDATE is not true or false: 'no'", invalid.getMessage());
+  }
+
+  private static boolean selfUpdate(String value) throws RunnerEnv.Invalid {
+    return RunnerEnv.parse(
+            "https://ci.example", "r1", null, null, null, null, null, null, null, null, null, value)
+        .selfUpdate();
   }
 }

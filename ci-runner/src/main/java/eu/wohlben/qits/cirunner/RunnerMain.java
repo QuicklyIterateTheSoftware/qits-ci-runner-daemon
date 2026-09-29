@@ -252,6 +252,14 @@ public final class RunnerMain implements ControlSocket.Listener {
         reserveIf(reservations.onReleased(released.runId()));
         rollover.poke();
       }
+      case Upgrade upgrade when !env.selfUpdate() ->
+          // Deployer-managed: the deployer replaces this container, so there is nothing to drain
+          // for and no successor to start. The frame has no refusal to answer with; the capability
+          // label this runner advertises is how the host knows.
+          LOG.infof(
+              "ci-runner ignored an upgrade to %s: it is deployer-managed (%s=false), and its"
+                  + " deployer, not the runner, replaces it",
+              upgrade.version(), RunnerEnv.SELF_UPDATE);
       case Upgrade upgrade -> {
         // At once, on the loop: not one more Reserve goes out after this frame.
         reservations.drain();
@@ -291,6 +299,8 @@ public final class RunnerMain implements ControlSocket.Listener {
       return;
     }
     LOG.infof("ci-runner connected slots=%d", ack.slots());
+    // Admitted: healthy from now, rather than one heartbeat interval from now.
+    beat();
     parts.launcher().onAck(ack.registryMirrors());
     // Before the slots are counted: a carried run the host did not keep holds no slot any more.
     for (String runId : reservations.settleCarried(ack.adoptedRuns())) {
@@ -327,6 +337,23 @@ public final class RunnerMain implements ControlSocket.Listener {
     }
     LOG.info("ci-runner exits: retired");
     exit.complete(ExitCode.OK);
+  }
+
+  @Override
+  public void onHeartbeatSent() {
+    beat();
+  }
+
+  /**
+   * Touch the heartbeat file {@link HealthCommand} reads. Never fatal: a runner that cannot write
+   * its state directory says so on its next registration or rollover, not here, every 10 s.
+   */
+  private void beat() {
+    try {
+      HealthCommand.touch(env.stateDir());
+    } catch (java.io.IOException | RuntimeException e) {
+      LOG.debugf("ci-runner could not touch its heartbeat file: %s", e.getMessage());
+    }
   }
 
   @Override

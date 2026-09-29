@@ -69,6 +69,9 @@ class RunnerMainTest {
   private Telemetry telemetry = Telemetry.off();
   private Rollover.Settings rolloverSettings = new Rollover.Settings(100, 400, 3_000, 3_000, 50);
 
+  /** {@code QITS_CI_RUNNER_SELF_UPDATE} as the environment would carry it; null is unset. */
+  private String selfUpdate;
+
   /** How long an invalid_client streak must last to be believed; production's is five minutes. */
   private long refusalConfirmMillis = 300_000;
 
@@ -90,7 +93,9 @@ class RunnerMainTest {
 
   private CompletableFuture<Integer> start(String token, long heartbeatMillis) throws Exception {
     RunnerEnv env =
-        RunnerEnv.parse(host.base(), "r1", token, state.toString(), "2", docker.binary, "10", null);
+        RunnerEnv.parse(
+            host.base(), "r1", token, state.toString(), "2", docker.binary, "10", null, null, null,
+            null, selfUpdate);
     Docker d = docker.docker(10);
     Http http = new Http(vertx, 5_000);
     runner =
@@ -469,6 +474,74 @@ class RunnerMainTest {
     ackWith(1, 0);
     start("t", 100);
     host.await(Heartbeat.class, 3);
+  }
+
+  @Test
+  void theAckAndEveryHeartbeatSentTouchTheHeartbeatFile() throws Exception {
+    Path beat = state.resolve(HealthCommand.FILE);
+    ackWith(1, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+    awaitFile(beat);
+    assertEquals(
+        HealthCommand.HEALTHY,
+        HealthCommand.check(state, java.time.Instant.now(), HealthCommand.MAX_AGE).exitCode(),
+        "admitted is healthy at once, a whole heartbeat interval early");
+  }
+
+  @Test
+  void aHeartbeatOnALiveSessionMovesTheMtimeForward() throws Exception {
+    Path beat = state.resolve(HealthCommand.FILE);
+    ackWith(1, 0);
+    start("t", 100);
+    host.await(Heartbeat.class);
+    awaitFile(beat);
+    Files.setLastModifiedTime(beat, java.nio.file.attribute.FileTime.fromMillis(0));
+    int seen = host.all(Heartbeat.class).size();
+    host.await(Heartbeat.class, seen + 2);
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (Files.getLastModifiedTime(beat).toMillis() == 0 && System.nanoTime() < deadline) {
+      Thread.sleep(20);
+    }
+    assertTrue(
+        Files.getLastModifiedTime(beat).toMillis() > System.currentTimeMillis() - 60_000,
+        "touched again by a heartbeat");
+  }
+
+  @Test
+  void aRunnerThatNeverConnectsWritesNoHeartbeat() throws Exception {
+    // No Ack: a Hello the host never answers is not admission, and heartbeats are off.
+    host.script = (h, message) -> {};
+    start("t", 0);
+    host.await(Hello.class);
+    Thread.sleep(300);
+    assertFalse(Files.exists(state.resolve(HealthCommand.FILE)));
+  }
+
+  @Test
+  void aRunnerWithSelfUpdateOffIgnoresAnUpgradeAndKeepsReserving() throws Exception {
+    selfUpdate = "false";
+    runnerContainer();
+    holdARun();
+
+    host.send(new Upgrade(NEXT, IMAGE, DIGEST));
+    host.send(new Released("run-a"));
+    host.send(new Backlog(1));
+    host.await(Reserve.class, 2);
+    Thread.sleep(300);
+    assertTrue(
+        docker.callsQuietly("pull").isEmpty(),
+        "no pull: the deployer, not the runner, replaces it");
+    assertTrue(docker.callsQuietly("run").isEmpty(), "no successor");
+    assertFalse(exit.isDone());
+  }
+
+  private static void awaitFile(Path file) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+    while (!Files.exists(file) && System.nanoTime() < deadline) {
+      Thread.sleep(20);
+    }
+    assertTrue(Files.exists(file), file + " was never written");
   }
 
   @Test

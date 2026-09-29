@@ -69,6 +69,13 @@ public final class ControlSocket {
      * for good and will not redial; {@code why} is for the log.
      */
     default void onDeleted(String why) {}
+
+    /**
+     * A {@code Heartbeat} was written on a connected socket — the periodic proof this runner is
+     * talking to qits-ci, which {@link RunnerMain} turns into the heartbeat file {@link
+     * HealthCommand} reads. Never called while disconnected.
+     */
+    default void onHeartbeatSent() {}
   }
 
   /**
@@ -285,7 +292,7 @@ public final class ControlSocket {
   private void heartbeat() {
     WebSocket ws = socket;
     if (ws != null && !ws.isClosed()) {
-      send(new Heartbeat());
+      send(new Heartbeat()).onSuccess(v -> listener.onHeartbeatSent());
     }
   }
 

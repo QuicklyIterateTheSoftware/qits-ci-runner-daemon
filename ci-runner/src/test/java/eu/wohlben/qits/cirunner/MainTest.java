@@ -45,4 +45,12 @@ class MainTest {
         "the workspace pair would bucket the runner away from its service.name");
     assertEquals("r1", Main.telemetryResource("r1", Optional.empty(), caps).get("service.instance.id"));
   }
+
+  @Test
+  void aRunnerWithSelfUpdateOffSaysSoInItsCapabilityLabels(@org.junit.jupiter.api.io.TempDir java.nio.file.Path proc) {
+    assertEquals(
+        java.util.Map.of("qits.ci.runner.self-update", "false"),
+        Main.capabilities(proc, false).labels());
+    assertEquals(java.util.Map.of(), Main.capabilities(proc, true).labels(), "the default adds none");
+  }
 }

@@ -41,7 +41,15 @@ public class Main {
    */
   static final String TELEMETRY_URL = "QITS_CI_RUNNER_TELEMETRY_URL";
 
+  /** The capability label a runner with {@code QITS_CI_RUNNER_SELF_UPDATE=false} advertises. */
+  public static final String SELF_UPDATE_LABEL = "qits.ci.runner.self-update";
+
   public static void main(String... args) {
+    if (args.length > 0 && HealthCommand.ARG.equals(args[0])) {
+      // The container healthcheck: one file's mtime, no Quarkus, no other variable. Only the
+      // explicit argument selects it — the image's bare start passes none (its CMD is empty).
+      System.exit(HealthCommand.run(System.getenv("QITS_CI_RUNNER_STATE_DIR"), System.out));
+    }
     if (printsVersion(System.getenv(PRINT_VERSION))) {
       System.out.println(CiRunnerBinary.VERSION);
       return;
@@ -121,6 +129,9 @@ public class Main {
     @ConfigProperty(name = "qits.ci.runner.rollover-timeout")
     Optional<String> rolloverTimeout;
 
+    @ConfigProperty(name = "qits.ci.runner.self-update")
+    Optional<String> selfUpdate;
+
     @ConfigProperty(name = "qits.ci.runner.heartbeat-interval-ms", defaultValue = "10000")
     long heartbeatMillis;
 
@@ -150,7 +161,8 @@ public class Main {
                 buildkitImage.orElse(null),
                 buildkitHttpRegistries.orElse(null),
                 buildkitRegistryMirrors.orElse(null),
-                rolloverTimeout.orElse(null));
+                rolloverTimeout.orElse(null),
+                selfUpdate.orElse(null));
         telemetryUrl = RunnerEnv.telemetryUrl(System.getenv(TELEMETRY_URL), env.url());
       } catch (RunnerEnv.Invalid invalid) {
         // The container's log is the only channel before anything is dialled, so this line is the whole
@@ -161,7 +173,7 @@ public class Main {
       Docker docker = Docker.forking(env.dockerTimeoutSeconds());
       Http http = new Http(vertx, httpTimeoutMillis);
       Optional<String> self = SelfContainer.detect();
-      Capabilities capabilities = capabilities(IdRange.PROC_SELF);
+      Capabilities capabilities = capabilities(IdRange.PROC_SELF, env.selfUpdate());
       Telemetry telemetry =
           telemetryUrl == null
               ? Telemetry.off()
@@ -182,6 +194,12 @@ public class Main {
       // After the telemetry handler, so the one line an operator must act on is shipped too.
       if (capabilities.narrowIdRange()) {
         LOG.warn(IdRange.narrowWarning(capabilities.idRange()));
+      }
+      if (!env.selfUpdate()) {
+        LOG.infof(
+            "ci-runner is deployer-managed (%s=false): it ignores every Upgrade and is replaced by"
+                + " its deployer",
+            RunnerEnv.SELF_UPDATE);
       }
       if (telemetryUrl == null) {
         LOG.infof(
@@ -284,8 +302,14 @@ public class Main {
    * handed exists here — the one capability qits-ci matches on. The platform is spelled the way an
    * image's is ({@code amd64}, {@code arm64}, {@code linux}), so a later match needs no table. The
    * id range is read from {@code procSelf}'s maps (see {@link IdRange}).
+   *
+   * <p>A runner with self-update switched off says so in its labels ({@link #SELF_UPDATE_LABEL}
+   * {@code =false}) — in its registration and in every {@code Hello}, both of which carry these
+   * capabilities — so qits-ci can tell a deployer-managed runner from one that will become the
+   * version it is told to. A self-updating runner carries no label at all, as every runner before
+   * the switch did.
    */
-  static Capabilities capabilities(Path procSelf) {
+  static Capabilities capabilities(Path procSelf, boolean selfUpdate) {
     String arch =
         switch (System.getProperty("os.arch", "").toLowerCase(Locale.ROOT)) {
           case "amd64", "x86_64" -> "amd64";
@@ -294,6 +318,7 @@ public class Main {
         };
     String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
     boolean docker = Files.exists(Path.of(RunnerArgv.DOCKER_SOCKET));
-    return new Capabilities(docker, arch, os, Map.of(), IdRange.read(procSelf));
+    Map<String, String> labels = selfUpdate ? Map.of() : Map.of(SELF_UPDATE_LABEL, "false");
+    return new Capabilities(docker, arch, os, labels, IdRange.read(procSelf));
   }
 }

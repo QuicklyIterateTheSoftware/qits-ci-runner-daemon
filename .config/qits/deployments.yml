@@ -1,0 +1,54 @@
+# How qits-deployments deploys this repo — and only on the platform host. It reads this file from
+# the git host at the built sha, so the answer travels with the commit.
+#
+# WHAT IS DEPLOYED HERE IS ONE RUNNER, THE PLATFORM HOST'S OWN (`localhost`). Every other runner is a
+# container a person starts on their machine with the install line, and updates itself. This one is
+# the same image run as an ordinary deployable, because since epic qits-443 the platform host runs CI
+# steps the way any other host does: through a runner, not through qits-ci's in-process executor.
+# Its runner id and registration token are deployment config for application qits-ci-runner in
+# qits-configuration, written by the bootstrap / the operator — nobody installs it by hand.
+#
+# CARRYING THE FILE AT ALL is the other thing it says: qits-projects reads it at the release tag to
+# decide whether this repository deploys. What deploys is the VERSION COORDINATE the release build
+# published — the `qits/qits-ci-runner` image release.yml declares — never a branch.
+#
+# The application name is spelled because the repository (qits-ci-runner-daemon) is not the
+# application: the image is `qits/qits-ci-runner`, and every name the deployer derives — the swarm
+# service, the extras family `qits.deployments.extras.qits-ci-runner.*`, the volume below — hangs off
+# this one.
+application: qits-ci-runner
+
+# NO `routes:`. Nothing listens in this container: the runner only dials out, to qits-ci's control
+# socket. There is nothing for the edge to route to and no page for the sidebar.
+
+# NOT AN HTTP SERVICE, so the derived health path cannot work — the gate would curl localhost:8080
+# and nothing answers there. The runner's own subcommand is the probe instead: healthy means the
+# heartbeat file in the state directory was touched within 60 s, which the runner does only while it
+# is connected to qits-ci (on admission and on every 10 s heartbeat). A runner that is up but cannot
+# reach the CI is exactly the one that should read unhealthy.
+health_cmd: /usr/local/bin/qits-ci-runner health
+
+# The state volume: `client.json` — the runner's commissioned client, which its one-time
+# registration token was exchanged for — and the record of step images it has launched. It must
+# outlive every redeploy: a runner that lost it would have to register again with a token that is
+# already spent. Mounted where the image's default QITS_CI_RUNNER_STATE_DIR points.
+volumes: private:state:/var/lib/qits-ci-runner
+
+# STOP-FIRST, because two runners on one host would double-hold its slots. The deployer's default,
+# start-first, would briefly run the successor beside the predecessor — two processes of one runner
+# id on one docker daemon, each reserving runs against the same machine. Stopping first costs the
+# runs in flight on it: they fail CONNECTION_LOST and are retryable.
+update_order: stop-first
+
+# WHAT IT DOES NEED IS NOT DECLARED HERE, because it is not a resource this deployer provisions: the
+# host's docker socket. This is the fourth socket holder on the platform, after qits-containers,
+# qits-deployments and qits-system, and the grant is a deliberate, recorded act in qits-bootstrap-cli's
+# ComposeTemplate extras block — `mounts[]=bind:/var/run/docker.sock:/var/run/docker.sock` — because
+# it is what qits-ci's in-process executor held through qits-containers until epic qits-443 moved
+# the platform host's steps onto this runner. The image runs as root, so no group grant is needed
+# beside the bind.
+#
+# AND THIS DEPLOYMENT RUNS WITH QITS_CI_RUNNER_SELF_UPDATE=false (in the same extras block), because
+# the deployer, not the runner, replaces it. With the switch off the runner ignores qits-ci's
+# `Upgrade` rather than starting a successor container beside the swarm's, and advertises the
+# capability label `qits.ci.runner.self-update=false` so qits-ci can tell it apart.

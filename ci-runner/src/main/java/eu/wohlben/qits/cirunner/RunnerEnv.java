@@ -25,7 +25,16 @@ public record RunnerEnv(
     String buildkitImage,
     List<String> buildkitHttpRegistries,
     List<String> buildkitRegistryMirrors,
-    long rolloverTimeoutSeconds) {
+    long rolloverTimeoutSeconds,
+    boolean selfUpdate) {
+
+  /**
+   * {@code QITS_CI_RUNNER_SELF_UPDATE}: whether an {@code Upgrade} makes this runner roll itself over
+   * ({@link Rollover}). Default true — a runner a person installed has nobody else to update it.
+   * False is the platform host's runner, a swarm service the deployer replaces: it ignores every
+   * {@code Upgrade} and says so in its capability labels ({@link Main#SELF_UPDATE_LABEL}).
+   */
+  public static final String SELF_UPDATE = "QITS_CI_RUNNER_SELF_UPDATE";
 
   /**
    * A registry as buildkitd.toml names it: {@code host[:port]}. Checked here because the value is
@@ -126,6 +135,26 @@ public record RunnerEnv(
       String buildkitRegistryMirrors,
       String rolloverTimeout)
       throws Invalid {
+    return parse(
+        url, runnerId, registrationToken, stateDir, slots, dockerBinary, dockerTimeout,
+        buildkitImage, buildkitHttpRegistries, buildkitRegistryMirrors, rolloverTimeout, null);
+  }
+
+  /** The same, with {@link #SELF_UPDATE}: {@code true}/{@code false} (or {@code 1}/{@code 0}). */
+  public static RunnerEnv parse(
+      String url,
+      String runnerId,
+      String registrationToken,
+      String stateDir,
+      String slots,
+      String dockerBinary,
+      String dockerTimeout,
+      String buildkitImage,
+      String buildkitHttpRegistries,
+      String buildkitRegistryMirrors,
+      String rolloverTimeout,
+      String selfUpdate)
+      throws Invalid {
     if (blank(url)) {
       throw new Invalid("QITS_CI_RUNNER_URL is not set");
     }
@@ -154,7 +183,19 @@ public record RunnerEnv(
         positive(
             "QITS_CI_RUNNER_ROLLOVER_TIMEOUT",
             stripSeconds(rolloverTimeout),
-            DEFAULT_ROLLOVER_TIMEOUT_SECONDS));
+            DEFAULT_ROLLOVER_TIMEOUT_SECONDS),
+        bool(SELF_UPDATE, selfUpdate, true));
+  }
+
+  private static boolean bool(String variable, String value, boolean fallback) throws Invalid {
+    if (blank(value)) {
+      return fallback;
+    }
+    return switch (value.trim().toLowerCase(java.util.Locale.ROOT)) {
+      case "true", "1" -> true;
+      case "false", "0" -> false;
+      default -> throw new Invalid(variable + " is not true or false: '" + value.trim() + "'");
+    };
   }
 
   /** A CI url whose host is the edge's {@code ci.} application name, and what follows it. */
