@@ -416,6 +416,37 @@ class RunnerMainTest {
   }
 
   /**
+   * qits-443: reap-then-reserve. A restarted qits-ci adopts nothing and has put the run back in its
+   * queue, so the reconnected runner is offered the same run again at once. The carried attempt's
+   * containers are gone before the session's first Reserve — a cancel still running after the Take
+   * would find the new attempt's container under the same run label.
+   */
+  @Test
+  void aCarriedRunTheHostDidNotKeepIsReapedBeforeTheSessionReserves() throws Exception {
+    ackWith(2, 1);
+    start("t", 10_000);
+    host.await(Hello.class, 1);
+    host.await(Reserve.class, 1);
+    host.send(new Take("run-a", "repo", "main", "abc"));
+    awaitHeld(1);
+    // The carried run's container, slow to go: the Reserve has every chance to overtake it.
+    docker.answer("ps+label_qits.ci.runner.run_run-a", 0, "old1\n", "");
+    docker.answerFor("rm", "old1", 0, "old1\n", "").hang("rm+old1", 2);
+    int before = host.all(Reserve.class).size();
+    host.socket.close();
+
+    host.await(Hello.class, 2);
+    Thread.sleep(700);
+    assertEquals(
+        before,
+        host.all(Reserve.class).size(),
+        "nothing is reserved while the carried run's container is still being removed");
+    assertEquals(0, runner.reservations().held(), "and it holds no slot");
+    awaitCall(List.of("rm", "-f", "old1"), "the carried run is cancelled");
+    host.await(Reserve.class, before + 1);
+  }
+
+  /**
    * qits-545: a socket that drops mid-step no longer costs the step. The run is carried across,
    * its container survives the reconnect's sweep, the Hello claims it and — adopted by the host —
    * it is still held, so the slot stays counted and the next Reap for it is answered as ever.

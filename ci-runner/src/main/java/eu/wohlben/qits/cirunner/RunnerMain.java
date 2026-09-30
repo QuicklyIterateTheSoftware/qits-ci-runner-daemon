@@ -142,6 +142,15 @@ public final class RunnerMain implements ControlSocket.Listener {
 
   private final CompletableFuture<Integer> exit = new CompletableFuture<>();
   private volatile ControlSocket socket;
+
+  /**
+   * The removal of the carried runs the host did not keep, which every {@code Ack}'s slots wait
+   * behind — see {@link #onAck}. Complete when there was nothing to remove.
+   */
+  private volatile CompletableFuture<Void> carriedReaped = CompletableFuture.completedFuture(null);
+
+  /** The slot cap of the newest {@code Ack}. */
+  private volatile int ackedSlots;
   private volatile Rollover rollover;
 
   /** Set once, by the first of the ways a runner learns it was deleted. */
@@ -303,11 +312,31 @@ public final class RunnerMain implements ControlSocket.Listener {
     beat();
     parts.launcher().onAck(ack.registryMirrors());
     // Before the slots are counted: a carried run the host did not keep holds no slot any more.
-    for (String runId : reservations.settleCarried(ack.adoptedRuns())) {
-      LOG.infof("ci-runner's host did not keep carried run %s; cancelling it", runId);
-      workers.execute(() -> parts.reaper().cancel(runId));
+    // And reap-then-reserve: its containers are gone before this session can reserve anything. A
+    // host that did not keep a run (a restarted qits-ci adopts nothing) has usually put it back in
+    // its queue, so the very next Take can be the same run — and a cancel still running then would
+    // find the new attempt's container under the same run label and remove that too. The slots stay
+    // at the suspended zero until the cancels are over, so no Backlog in between reserves either.
+    List<String> dropped = reservations.settleCarried(ack.adoptedRuns());
+    if (!dropped.isEmpty()) {
+      carriedReaped =
+          CompletableFuture.runAsync(
+              () -> {
+                for (String runId : dropped) {
+                  LOG.infof("ci-runner's host did not keep carried run %s; cancelling it", runId);
+                  try {
+                    parts.reaper().cancel(runId);
+                  } catch (RuntimeException e) {
+                    LOG.warnf("ci-runner could not cancel run %s: %s", runId, e.getMessage());
+                  }
+                }
+              },
+              workers);
     }
-    reserveIf(reservations.onAck(ack.slots()));
+    // The newest Ack's number, whichever callback applies it: a re-sent Ack during the cancels
+    // waits for them too.
+    ackedSlots = ack.slots();
+    carriedReaped.whenComplete((done, failure) -> reserveIf(reservations.onAck(ackedSlots)));
     // The first Ack is this version proven on the wire, so whatever this runner ran before it is
     // done with. Once per process (Rollover keeps the latch), and off the loop: it can wait a minute.
     // Housekeeping starts after it, so the leftover-image sweep finds the predecessors gone; it too

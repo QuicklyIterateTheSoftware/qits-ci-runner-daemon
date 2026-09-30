@@ -154,6 +154,7 @@ public final class Launcher {
         return failed(launch, pullFailure.get());
       }
       stepImages.used(spec.image());
+      removeStale(launch, spec.name());
       started = docker.run(run);
     } finally {
       launching.unlock();
@@ -166,6 +167,41 @@ public final class Launcher {
     LOG.infof(
         "ci-runner launched run %s step %d as %s", launch.runId(), launch.stepIndex(), spec.name());
     return new Launched(launch.runId(), launch.stepIndex(), containerId);
+  }
+
+  /**
+   * {@code docker rm -f <name>} before the {@code run} that will take the name, so a launch never
+   * fails on a name conflict.
+   *
+   * <p><b>Whatever holds the name is a leftover.</b> A step container's name is qits-ci's, and
+   * deterministic per (run, commit, step index); the host launches a step once per attempt and never
+   * twice under one name while it still drives the first. So a container already holding the name
+   * when its {@code Launch} arrives belongs to an earlier attempt the host no longer tracks — a run
+   * a restarted qits-ci put back in its queue and this runner took again, say — and the host, in
+   * sending this {@code Launch}, has said so. A run the host adopted across a reconnect is the same
+   * attempt carried on: its step was already launched and is not launched again.
+   *
+   * <p>Never an obstacle: no such container is the ordinary case and silent, and a removal docker
+   * refused is logged and left to the {@code run}, whose own words are then the launch's answer.
+   */
+  private void removeStale(Launch launch, String name) {
+    Docker.Result gone = docker.run(RunnerArgv.rm(dockerBinary, name));
+    if (gone.ok()) {
+      // docker echoes what it removed; `rm -f` of nothing is silent (or "No such container", below).
+      if (!gone.stdout().isBlank()) {
+        LOG.infof(
+            "ci-runner removed a stale container holding the name %s before launching run %s step"
+                + " %d",
+            name, launch.runId(), launch.stepIndex());
+      }
+      return;
+    }
+    if (gone.detail().contains("No such container")) {
+      return;
+    }
+    LOG.warnf(
+        "ci-runner could not remove a container named %s before launching run %s step %d: %s",
+        name, launch.runId(), launch.stepIndex(), gone.detail());
   }
 
   /**

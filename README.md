@@ -403,6 +403,23 @@ in its `Ack` (`adoptedRuns`), and the runner cancels every carried run the host 
 is all of them against a qits-ci older than the field. So a dropped socket no longer costs a running
 step, and a process restart (which carries nothing) still starts from an empty label.
 
+**Reap, then reserve.** The carried runs the host did not keep are cancelled *before* the session
+reserves anything: the `Ack`'s slots are not counted until their containers are gone. A qits-ci that
+restarted adopts nothing — what it held was in memory — and its boot puts the runs it was driving
+back in the queue, so the first `Take` of the new session is routinely the very run whose containers
+are being removed. A cancel finds a run's containers by the run label, which the new attempt's
+container carries too, so one still running after that `Take` would remove the new attempt's step.
+
+**A `Launch` owns its container name.** A step container's name is qits-ci's and deterministic per
+(run, commit, step index), and the host launches a step once per attempt. So whatever already holds
+the name when a `Launch` for it arrives is a leftover of an earlier attempt the host no longer
+tracks, and the runner removes it (`docker rm -f <name>`) immediately before the `docker run` —
+silently when there was nothing, one INFO line when there was, and a removal docker refused is left
+to the `run` to report. A `Launch` therefore never fails on `The container name … is already in
+use`. A run the host *adopted* is unaffected: it is the same attempt carried on, its step was already
+launched, and the host does not launch it a second time. This is the one removal that does not read
+the container's last output first — the attempt it belonged to was already given up.
+
 **The build plane.** A step whose spec sets `buildPlane` (qits-ci's `docker: true` or `build: true`)
 or binds the docker socket gets the runner's own `qits-ci-runner-buildkitd` (privileged, state volume
 `qits-buildkitd-state`, on the runner-owned bridge network `qits-ci-runner`), started on first need.

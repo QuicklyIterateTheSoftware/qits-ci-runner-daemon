@@ -64,7 +64,58 @@ class LauncherTest {
         launcher(fake).launch(new Launch("run-1", 0, WorkloadSpec.of("alpine:3", "c0"))));
     List<List<String>> calls = fake.calls();
     assertEquals(List.of("pull", "alpine:3"), calls.get(1));
-    assertEquals("run", calls.get(2).get(0));
+    assertEquals("run", calls.get(3).get(0));
+  }
+
+  @Test
+  void aStaleContainerHoldingTheNameIsRemovedBeforeTheRun() throws Exception {
+    // docker echoes the name it removed.
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("rm", 0, "qits-ci-run-1-x-0\n", "")
+            .answer("run", 0, "cid\n", "");
+    assertEquals(
+        new Launched("run-1", 0, "cid"),
+        launcher(fake).launch(new Launch("run-1", 0, WorkloadSpec.of("alpine:3", "qits-ci-run-1-x-0"))));
+    List<List<String>> calls = fake.calls();
+    int rm = calls.indexOf(List.of("rm", "-f", "qits-ci-run-1-x-0"));
+    assertTrue(rm >= 0, () -> "the name is cleared: " + calls);
+    assertEquals(1, fake.calls("rm").size());
+    assertEquals("run", calls.get(rm + 1).get(0), "and the run is the very next call");
+    assertEquals(calls.size() - 1, rm + 1);
+  }
+
+  @Test
+  void noSuchContainerIsTheOrdinaryCaseAndTheRunGoesAhead() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("rm", 1, "", "Error response from daemon: No such container: c0")
+            .answer("run", 0, "cid\n", "");
+    assertEquals(
+        new Launched("run-1", 0, "cid"),
+        launcher(fake).launch(new Launch("run-1", 0, WorkloadSpec.of("alpine:3", "c0"))));
+    assertEquals(List.of(List.of("rm", "-f", "c0")), fake.calls("rm"));
+  }
+
+  @Test
+  void aRemovalDockerRefusesLeavesTheVerdictToTheRun() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("rm", 1, "", "cannot remove container: permission denied")
+            .answer("run", 125, "", "Conflict. The container name \"/c0\" is already in use");
+    LaunchFailed failed =
+        assertInstanceOf(
+            LaunchFailed.class,
+            launcher(fake).launch(new Launch("run-1", 0, WorkloadSpec.of("alpine:3", "c0"))));
+    assertTrue(failed.detail().contains("already in use"), failed::detail);
+  }
+
+  @Test
+  void aFailedPullRemovesNothing() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir).answer("image-inspect", 1, "", "").answer("pull", 1, "", "denied");
+    launcher(fake).launch(new Launch("run-1", 0, WorkloadSpec.of("nope:1", "c0")));
+    assertEquals(0, fake.calls("rm").size());
   }
 
   @Test
@@ -266,7 +317,9 @@ class LauncherTest {
     launcher.onAck(mirrors);
     launcher.launch(new Launch("run-2", 0, building(null, Map.of(), false)));
 
-    assertEquals(0, fake.calls("rm").size());
+    // The only removals are each launch clearing its own step name — never the builder.
+    List<String> clearsTheStepName = List.of("rm", "-f", "qits-ci-run-1-x-0");
+    assertEquals(List.of(clearsTheStepName, clearsTheStepName), fake.calls("rm"));
   }
 
   // --- the launch's own registry login (qits-478) ------------------------------------------------
@@ -312,7 +365,7 @@ class LauncherTest {
     assertEquals(List.of(List.of("700 600", DOCUMENT), List.of("700 600", DOCUMENT)), fake.configs());
     assertFalse(Files.exists(configDir), "the login outlives its pull: " + configDir);
     // The run is not given it — the image is local by then — and the step keeps its env as sent.
-    List<String> run = calls.get(2);
+    List<String> run = calls.get(3);
     assertEquals("run", run.get(0));
     assertEquals(DOCUMENT, envValue(run, "QITS_CI_REGISTRY_AUTH_CONFIG"));
   }
