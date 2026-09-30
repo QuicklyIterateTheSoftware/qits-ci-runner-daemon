@@ -305,6 +305,36 @@ release deploy `qits-ci-runner` onto the platform host, which the live estate do
 held back until the fresh-bootstrap follow-up adds it back, alongside the docker-socket grant, the
 state volume, and the stop-first update order it would need.
 
+### Does a container on the platform host reach the public names at all?
+
+A same-node runner's step containers would dial the same public edge names as any other runner —
+`ci.<domain>`, `registry.<domain>`, `mirror.<domain>`, `githost.<domain>`, `idp.<domain>` — rather
+than `qits-net` aliases, so a step keeps working whichever host it happens to land on. That only
+works if the platform host can **hairpin**: route a packet a container on that host sent to the
+host's own public address back to itself through the NAT gateway, rather than the gateway dropping it
+for not coming from outside. Not every NAT does this, so it is worth measuring before building
+anything for it rather than after.
+
+The test, worth repeating if this is ever revisited:
+
+    docker run --rm curlimages/curl -sI https://ci.<domain>/ci/q/health/ready
+
+`HTTP/2 401` means the name resolves and the edge answered — hairpin works. A refused connection or a
+timeout means it does not, and step containers would then need `--add-host` entries (a
+`QITS_CI_RUNNER_EXTRA_HOSTS`-shaped variable, alongside the two builder lists above) pointing each
+vhost at wherever the edge's published 443 actually answers from that host.
+
+**Measured 2026-09-30 16:38Z, on the live estate**, from a workspace container running on the
+platform host (an ordinary workspace has no docker socket, so the probe was `curl` inside that
+container rather than `docker run` on the default bridge; both leave the host through the same NAT):
+`getent hosts ci.qits.wohlben.eu` → `46.224.171.33`, the public address; `curl
+https://ci.qits.wohlben.eu/ci/q/health/ready` → `401` over HTTP/2 in 84 ms from that same address,
+and `200` with a bearer. Hairpin works, so `QITS_CI_RUNNER_EXTRA_HOSTS` was **not** built — there was
+nothing on this estate for it to fix.
+
+This matters only for the fresh-bootstrap follow-up above, not for today: the live estate runs no
+runner on the platform host (see above), so nothing here is exercised until that lands.
+
 ## Layout
 
 | Path | What |
