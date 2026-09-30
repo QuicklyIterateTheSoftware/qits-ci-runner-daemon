@@ -91,7 +91,7 @@ over the `QITS_CI_RUNNER_SLOTS` the machine advertises. After that you will see 
 
 ### Updating
 
-Nothing to do: a runner updates itself (all but the platform host's own, which its deployer replaces — see "On the platform host"). The CI pins the runner version it hands out, and a runner
+Nothing to do: a runner updates itself (all but a deployer-managed one, which its deployer replaces — see "On the platform host"). The CI pins the runner version it hands out, and a runner
 that connects with any other version is told to become it. `docker logs` of the old container then
 shows
 
@@ -200,7 +200,7 @@ reason, and the install script passes each one that is set in its environment (p
 | `QITS_CI_RUNNER_ROLLOVER_TIMEOUT` | Seconds a successor has to take over before it is removed and the update retried. | `180` |
 | `QITS_CI_RUNNER_TELEMETRY_URL` | The OTLP endpoint the runner's own log is shipped to (`/v1/logs` is appended). Empty switches it off. Not passed by the install script yet. | derived: `https://ci.<domain>` → `https://observability.<domain>/observability/api/otel`; none when the CI url's host is not `ci.…` |
 | `QITS_CI_RUNNER_PRINT_VERSION` | `1`: print the runner version and exit 0, needing nothing else. For the image's smoke test. | unset |
-| `QITS_CI_RUNNER_SELF_UPDATE` | `false` (or `0`): the runner never updates itself — it ignores the CI's update frame, logs that it is deployer-managed, and advertises the capability label `qits.ci.runner.self-update=false`. Only for the platform host's runner, which its deployer replaces (see "On the platform host"). | `true` |
+| `QITS_CI_RUNNER_SELF_UPDATE` | `false` (or `0`): the runner never updates itself — it ignores the CI's update frame, logs that it is deployer-managed, and advertises the capability label `qits.ci.runner.self-update=false`. Only for a deployer-managed runner, one whose deployer replaces it (see "On the platform host"). | `true` |
 
 Both builder lists stay empty on a machine that reaches the platform through its public domain —
 every registry there is HTTPS. A runner on the platform host's own network (`qits-net`) needs the
@@ -284,30 +284,26 @@ and never while disconnected; failing to touch it is logged at debug and never s
 
 ## On the platform host
 
-The platform host's own runner — the one the CI knows as `localhost` — is **not installed with the
-install line**. It is the same image, `qits/qits-ci-runner:<version>`, run as an ordinary
-qits-deployments deployable: a swarm service named `qits-ci-runner`, declared by
-`.config/qits/deployments.yml`, with the host's docker socket bind-mounted and the state volume
-`qits-ci-runner-state` at `/var/lib/qits-ci-runner`. It replaces the in-process executor qits-ci ran
-until epic qits-443.
+Not deployed on the live estate: the platform's own CI runs on an external runner, moved there for
+resource reasons, and the platform host itself runs no runner today. A same-node runner — the CI
+known as `localhost`, run as an ordinary qits-deployments deployable instead of installed with the
+install line — stays only a future default for a *fresh* bootstrap, and is follow-up work.
 
-- **Provisioned, never installed by hand.** Its `QITS_CI_RUNNER_ID` and
-  `QITS_CI_RUNNER_REGISTRATION_TOKEN` (with the URL and slots) are deployment config for application
-  `qits-ci-runner` in qits-configuration, written by the bootstrap / the operator. The docker-socket
-  bind is a recorded grant in qits-bootstrap-cli's ComposeTemplate extras block, beside
-  qits-containers', qits-deployments' and qits-system's. The state volume is declared in
-  `deployments.yml`, so `client.json` survives every redeploy and the one-time token is spent once.
-- **Self-update is off** (`QITS_CI_RUNNER_SELF_UPDATE=false`). The deployer replaces this container
-  when the repository releases; the runner ignores the CI's `Upgrade` (logging at INFO that it is
-  deployer-managed) instead of starting a successor beside the swarm's, and advertises
-  `qits.ci.runner.self-update=false` in its capability labels — in its registration and in every
-  `Hello`.
-- **Health is the heartbeat file**: the deployer's gate runs `/usr/local/bin/qits-ci-runner health`
-  in the container (see the exit codes above), so a runner that is up but cannot reach the CI reads
-  unhealthy and a deployment that never connects rolls back.
-- **Redeploys are stop-first**: two runners of one id on one host would double-hold its slots, so
-  the old one is stopped before the new one starts. A run in flight on it when it goes fails
-  `CONNECTION_LOST`, which is retryable.
+The pieces for that are already here, unused for now:
+
+- **`qits-ci-runner health`**, the subcommand described above, reading the heartbeat file — the
+  probe a deployer's health gate would run, since nothing listens in this container for an HTTP
+  check to reach.
+- **`QITS_CI_RUNNER_SELF_UPDATE=false`** (capability label `qits.ci.runner.self-update=false`): the
+  runner ignores the CI's `Upgrade` and logs that it is deployer-managed instead of starting a
+  successor beside a swarm's, for the case where something other than the runner itself replaces
+  the container.
+
+What is deliberately *not* in this repository yet is `.config/qits/deployments.yml` — the file that
+would make qits-deployments treat this image as a platform deployable. Carrying it makes every
+release deploy `qits-ci-runner` onto the platform host, which the live estate does not want; it is
+held back until the fresh-bootstrap follow-up adds it back, alongside the docker-socket grant, the
+state volume, and the stop-first update order it would need.
 
 ## Layout
 

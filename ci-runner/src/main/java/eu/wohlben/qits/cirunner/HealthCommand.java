@@ -10,9 +10,8 @@ import java.time.Duration;
 import java.time.Instant;
 
 /**
- * {@code qits-ci-runner health}: the container healthcheck of a runner the platform deployer runs
- * ({@code health_cmd} in {@code .config/qits/deployments.yml}), and the one reader of the heartbeat
- * file the running process writes.
+ * {@code qits-ci-runner health}: the container healthcheck a deployer-managed runner's {@code
+ * health_cmd} would run, and the one reader of the heartbeat file the running process writes.
  *
  * <p><b>Healthy means connected to qits-ci.</b> The runner touches {@code <state dir>/heartbeat}
  * when the host acknowledges its {@code Hello} and on every {@code Heartbeat} it actually sends on a

@@ -31,7 +31,7 @@ public record RunnerEnv(
   /**
    * {@code QITS_CI_RUNNER_SELF_UPDATE}: whether an {@code Upgrade} makes this runner roll itself over
    * ({@link Rollover}). Default true — a runner a person installed has nobody else to update it.
-   * False is the platform host's runner, a swarm service the deployer replaces: it ignores every
+   * False is a deployer-managed runner, a swarm service its deployer replaces: it ignores every
    * {@code Upgrade} and says so in its capability labels ({@link Main#SELF_UPDATE_LABEL}).
    */
   public static final String SELF_UPDATE = "QITS_CI_RUNNER_SELF_UPDATE";
