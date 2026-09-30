@@ -38,8 +38,19 @@ class DecommissionTest {
   }
 
   private int finish(String volume) {
+    return finish(volume, BuildPlane.STATE_VOLUME);
+  }
+
+  private int finish(String volume, String buildkitVolume) {
     return Decommission.finish(
-        docker.docker(10), docker.binary, "r1", volume, Optional.of(HELPER), FAST, said::add);
+        docker.docker(10),
+        docker.binary,
+        "r1",
+        volume,
+        buildkitVolume,
+        Optional.of(HELPER),
+        FAST,
+        said::add);
   }
 
   @Test
@@ -133,6 +144,27 @@ class DecommissionTest {
   @Test
   void withNoVolumeNamedOnlyTheBuildersVolumeIsTouched() throws Exception {
     assertEquals(0, finish(null));
+    assertEquals(
+        List.of(List.of("volume", "rm", BuildPlane.STATE_VOLUME)), docker.calls("volume"));
+  }
+
+  @Test
+  void aConfiguredBuildkitVolumeIsRemovedInsteadOfTheDefault() throws Exception {
+    assertEquals(0, finish(null, "operators-own-buildkitd-state"));
+    assertEquals(
+        List.of(List.of("volume", "rm", "operators-own-buildkitd-state")), docker.calls("volume"));
+    assertTrue(
+        said.stream()
+            .anyMatch(
+                line ->
+                    line.contains(
+                        "removed the builder's state volume operators-own-buildkitd-state")),
+        () -> String.join("\n", said));
+  }
+
+  @Test
+  void aBlankBuildkitVolumeFallsBackToTheDefault() throws Exception {
+    assertEquals(0, finish(null, "  "));
     assertEquals(
         List.of(List.of("volume", "rm", BuildPlane.STATE_VOLUME)), docker.calls("volume"));
   }

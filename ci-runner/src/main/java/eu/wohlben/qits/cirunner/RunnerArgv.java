@@ -412,15 +412,30 @@ public final class RunnerArgv {
   }
 
   /**
+   * The same, for a runner whose {@link BuildPlane} state volume is the default — a helper needs no
+   * {@code -e} for it, since {@link Decommission#finish} falls back to {@link
+   * BuildPlane#STATE_VOLUME} on its own when the variable is absent.
+   */
+  public static List<String> runDecommissioner(
+      String dockerBinary, String runnerId, String image, String volume) {
+    return runDecommissioner(dockerBinary, runnerId, image, volume, null);
+  }
+
+  /**
    * The decommission helper's whole {@code docker run}: the runner's own image (by id — the one this
    * process is running, so no pull and no registry login), its binary in helper mode through {@link
    * #DECOMMISSION_ENV}, and the docker socket, which is all it needs. No restart policy and no
    * network: it has one job, and talks only to the local daemon. <b>No {@code --rm} either</b>, by
    * this class's rule: the helper removes its own container as its last step, only once everything
    * else is gone, so a helper that failed is still there with its log to say why.
+   *
+   * <p>{@code buildkitVolume} is passed on only when it is not {@link BuildPlane#STATE_VOLUME}, the
+   * default every helper falls back to without it — so a runner never given {@code
+   * QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME} starts a byte-identical helper to the one before the
+   * variable existed.
    */
   public static List<String> runDecommissioner(
-      String dockerBinary, String runnerId, String image, String volume) {
+      String dockerBinary, String runnerId, String image, String volume, String buildkitVolume) {
     List<String> argv = new ArrayList<>();
     argv.add(dockerBinary);
     argv.add("run");
@@ -438,6 +453,11 @@ public final class RunnerArgv {
     if (volume != null) {
       argv.add("-e");
       argv.add(DECOMMISSION_VOLUME_ENV + "=" + require(NAME, "volume", volume));
+    }
+    if (buildkitVolume != null && !buildkitVolume.equals(BuildPlane.STATE_VOLUME)) {
+      argv.add("-e");
+      argv.add(
+          RunnerEnv.BUILDKIT_STATE_VOLUME + "=" + require(NAME, "buildkit volume", buildkitVolume));
     }
     argv.add(requireImage(image));
     return List.copyOf(argv);

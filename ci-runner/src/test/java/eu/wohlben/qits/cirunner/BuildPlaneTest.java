@@ -368,6 +368,73 @@ class BuildPlaneTest {
   }
 
   @Test
+  void theDefaultStateVolumeIsUnchangedFromBeforeItWasConfigurable() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("network-inspect", 1, "", "network qits-ci-runner not found")
+            .answer("inspect", 1, "", "No such object")
+            .answer("image-inspect", 1, "", "No such image");
+    BuildPlane plane = new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0");
+
+    assertEquals("qits-buildkitd-state", plane.stateVolume());
+    assertEquals(Optional.empty(), plane.ensure(null));
+    assertEquals(
+        List.of("volume", "create", "qits-buildkitd-state"), fake.calls("volume").getFirst());
+    List<String> run = fake.calls("run").getFirst();
+    assertEquals("qits-buildkitd-state:/var/lib/buildkit", run.get(run.indexOf("-v") + 1));
+  }
+
+  @Test
+  void aConfiguredStateVolumeNamesTheVolumeInEveryCall() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("network-inspect", 1, "", "network qits-ci-runner not found")
+            .answer("inspect", 1, "", "No such object")
+            .answer("image-inspect", 1, "", "No such image");
+    BuildPlane plane =
+        new BuildPlane(
+            fake.docker(10),
+            fake.binary,
+            "moby/buildkit:v0.33.0",
+            List.of(),
+            List.of(),
+            BuildPlane.HOST_CA_BUNDLE_CANDIDATES,
+            "operators-own-buildkitd-state");
+
+    assertEquals("operators-own-buildkitd-state", plane.stateVolume());
+    assertEquals(Optional.empty(), plane.ensure(null));
+    assertEquals(
+        List.of("volume", "create", "operators-own-buildkitd-state"),
+        fake.calls("volume").getFirst());
+    List<String> run = fake.calls("run").getFirst();
+    assertEquals("operators-own-buildkitd-state:/var/lib/buildkit", run.get(run.indexOf("-v") + 1));
+  }
+
+  @Test
+  void aDifferentStateVolumeChangesTheStampAndRecreatesTheBuilder() throws Exception {
+    FakeDocker fake = new FakeDocker(dir);
+    BuildPlane onDefault = new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0");
+    BuildPlane onOther =
+        new BuildPlane(
+            fake.docker(10),
+            fake.binary,
+            "moby/buildkit:v0.33.0",
+            List.of(),
+            List.of(),
+            BuildPlane.HOST_CA_BUNDLE_CANDIDATES,
+            "operators-own-buildkitd-state");
+    assertTrue(
+        !onDefault.stamp().equals(onOther.stamp()), "the state volume is stamp material");
+    // The running builder was started under the default volume.
+    fake.answer("inspect", 0, onDefault.stamp() + "|running\n", "");
+
+    assertEquals(Optional.empty(), onOther.ensure(null));
+    assertEquals(List.of(List.of("rm", "-f", "qits-ci-runner-buildkitd")), fake.calls("rm"));
+    List<String> run = fake.calls("run").getFirst();
+    assertTrue(run.contains("qits.ci.runner.buildkitd=" + onOther.stamp()));
+  }
+
+  @Test
   void anUnchangedConfigurationIsAdoptedRatherThanRecreated() throws Exception {
     FakeDocker fake = new FakeDocker(dir);
     BuildPlane plane =

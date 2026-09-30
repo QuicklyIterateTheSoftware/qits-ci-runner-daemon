@@ -340,4 +340,21 @@ class RunnerArgvTest {
         IllegalArgumentException.class,
         () -> RunnerArgv.runDecommissioner("docker", "r1", "sha256:x", "--privileged"));
   }
+
+  @Test
+  void theDecommissionHelperCarriesAConfiguredBuildkitVolumeButNotTheDefault() {
+    List<String> defaultVolume =
+        RunnerArgv.runDecommissioner(
+            "docker", "r1", "sha256:0123abcd", null, BuildPlane.STATE_VOLUME);
+    assertTrue(
+        defaultVolume.stream().noneMatch(a -> a.contains(RunnerEnv.BUILDKIT_STATE_VOLUME)),
+        "the default needs no -e: the helper falls back to it on its own");
+
+    List<String> configured =
+        RunnerArgv.runDecommissioner(
+            "docker", "r1", "sha256:0123abcd", null, "operators-own-buildkitd-state");
+    assertTrue(
+        configured.contains(RunnerEnv.BUILDKIT_STATE_VOLUME + "=operators-own-buildkitd-state"),
+        configured::toString);
+  }
 }

@@ -29,10 +29,11 @@ import org.jboss.logging.Logger;
  * <p><b>Its names are the runner's, not the platform's.</b> The container is {@value #CONTAINER},
  * never {@code qits-buildkitd}: a runner on the platform host (the INTERNAL plane this epic tests on)
  * shares its docker with qits-containers, and a runner that "converged" the platform's builder onto
- * its own stamp would replace the builder every platform build uses. The state volume is {@value
- * #STATE_VOLUME}, the name the brief asks for — shared with the platform's builder on that one host,
- * which costs nothing but a warm cache — and the network is the runner-owned bridge {@value
- * #NETWORK}.
+ * its own stamp would replace the builder every platform build uses. The state volume defaults to
+ * {@value #STATE_VOLUME}, the name the brief asks for — shared with the platform's builder on that
+ * one host, which costs nothing but a warm cache — and is operator-configurable ({@code
+ * QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME}, see {@link RunnerEnv#BUILDKIT_STATE_VOLUME}) for a host
+ * where sharing it is the wrong call. The network is the runner-owned bridge {@value #NETWORK}.
  *
  * <p><b>Ownership is the stamp label.</b> A container under the name carrying {@value #STAMP_LABEL}
  * is this runner's to adopt, start or replace; one without it is somebody else's and is refused, not
@@ -69,7 +70,13 @@ public final class BuildPlane {
   /** The builder's container name — also its address on {@link #NETWORK}. */
   public static final String CONTAINER = "qits-ci-runner-buildkitd";
 
-  /** Where the builder keeps its content store across replacements. */
+  /**
+   * Where the builder keeps its content store across replacements, when the operator names none —
+   * {@code QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME}'s default (see {@link
+   * RunnerEnv#BUILDKIT_STATE_VOLUME}). The instance's own {@link #stateVolume} is what every method
+   * below actually uses; this constant is the fallback {@link RunnerEnv} resolves to and the one
+   * value a test not exercising the variable should expect.
+   */
   public static final String STATE_VOLUME = "qits-buildkitd-state";
 
   /** What a building step is handed as {@code BUILDKIT_HOST} when its spec left the key absent. */
@@ -123,6 +130,7 @@ public final class BuildPlane {
   private final List<String> caBundleCandidates;
   private final String toml;
   private final Optional<String> caBundlePath;
+  private final String stateVolume;
 
   /** A builder with no registry configuration — every registry https and publicly resolvable. */
   public BuildPlane(Docker docker, String dockerBinary, String image) {
@@ -146,11 +154,12 @@ public final class BuildPlane {
   }
 
   /**
-   * The full constructor, with the CA bundle candidates as their own argument rather than a probe
-   * this class runs unconditionally: a test asserting the mount's presence or absence needs to
-   * control what the "host" carries without touching the real one the suite happens to run on, and
-   * {@link Main} passes none when the runner is itself in a container (see its {@code
-   * caBundleCandidates}).
+   * The same, with the CA bundle candidates as their own argument rather than a probe this class
+   * runs unconditionally: a test asserting the mount's presence or absence needs to control what
+   * the "host" carries without touching the real one the suite happens to run on, and {@link Main}
+   * passes none when the runner is itself in a container (see its {@code caBundleCandidates}).
+   * Defaults {@link #stateVolume} to {@link #STATE_VOLUME}, unchanged from before the volume became
+   * operator configurable.
    */
   public BuildPlane(
       Docker docker,
@@ -159,6 +168,25 @@ public final class BuildPlane {
       List<String> httpRegistries,
       List<String> registryMirrors,
       List<String> caBundleCandidates) {
+    this(
+        docker, dockerBinary, image, httpRegistries, registryMirrors, caBundleCandidates,
+        STATE_VOLUME);
+  }
+
+  /**
+   * The full constructor. {@code stateVolume} is {@code QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME}
+   * resolved by {@link RunnerEnv} — a changed value is stamp material (see {@link #stamp}), so
+   * pointing a runner at a different volume recreates the builder against it rather than adopting
+   * whatever the old volume's builder left running.
+   */
+  public BuildPlane(
+      Docker docker,
+      String dockerBinary,
+      String image,
+      List<String> httpRegistries,
+      List<String> registryMirrors,
+      List<String> caBundleCandidates,
+      String stateVolume) {
     this.docker = docker;
     this.dockerBinary = dockerBinary;
     this.image = image;
@@ -167,6 +195,7 @@ public final class BuildPlane {
     this.caBundleCandidates = List.copyOf(caBundleCandidates);
     this.toml = renderToml(httpRegistries, registryMirrors);
     this.caBundlePath = probeCaBundle(caBundleCandidates);
+    this.stateVolume = stateVolume;
   }
 
   /**
@@ -197,7 +226,8 @@ public final class BuildPlane {
       }
     }
     ackMirrors.forEach((from, to) -> merged.add(from + "=" + to));
-    return new BuildPlane(docker, dockerBinary, image, httpRegistries, merged, caBundleCandidates);
+    return new BuildPlane(
+        docker, dockerBinary, image, httpRegistries, merged, caBundleCandidates, stateVolume);
   }
 
   /**
@@ -319,6 +349,14 @@ public final class BuildPlane {
   }
 
   /**
+   * The volume this instance's builder keeps its content store in — {@link Decommission}'s to
+   * remove.
+   */
+  public String stateVolume() {
+    return stateVolume;
+  }
+
+  /**
    * Make sure the builder is up, and reachable from {@code stepNetwork} too when the step names one.
    * Answers the failure's detail, or empty when the step may launch. Synchronized: two building
    * steps launched at once must not both {@code docker run} the one name.
@@ -336,9 +374,9 @@ public final class BuildPlane {
       }
     }
     // Creating a volume that exists is docker's own no-op.
-    Docker.Result volume = docker.run(List.of(dockerBinary, "volume", "create", STATE_VOLUME));
+    Docker.Result volume = docker.run(List.of(dockerBinary, "volume", "create", stateVolume));
     if (!volume.ok()) {
-      return Optional.of("could not create " + STATE_VOLUME + ": " + volume.detail());
+      return Optional.of("could not create " + stateVolume + ": " + volume.detail());
     }
     String stamp = stamp();
     Docker.Result inspected = docker.run(inspectStamp());
@@ -431,7 +469,7 @@ public final class BuildPlane {
                 "--restart",
                 "unless-stopped",
                 "-v",
-                STATE_VOLUME + ":/var/lib/buildkit"));
+                stateVolume + ":/var/lib/buildkit"));
     caBundlePath.ifPresent(path -> argv.addAll(List.of("-v", path + ":" + CA_BUNDLE_MOUNT + ":ro")));
     argv.addAll(
         List.of(
@@ -463,7 +501,9 @@ public final class BuildPlane {
   }
 
   String stamp() {
-    String material = image + "\n" + toml + "\n" + BOOTSTRAP + "\n" + caBundlePath.orElse("");
+    String material =
+        image + "\n" + toml + "\n" + BOOTSTRAP + "\n" + caBundlePath.orElse("") + "\n"
+            + stateVolume;
     try {
       byte[] digest =
           MessageDigest.getInstance("SHA-256").digest(material.getBytes(StandardCharsets.UTF_8));

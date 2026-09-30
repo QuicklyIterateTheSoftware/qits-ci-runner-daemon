@@ -68,6 +68,7 @@ public final class Decommission {
   private final String runnerId;
   private final Optional<String> self;
   private final Path stateDir;
+  private final String buildkitStateVolume;
   private final Settings settings;
 
   public Decommission(
@@ -76,12 +77,14 @@ public final class Decommission {
       String runnerId,
       Optional<String> self,
       Path stateDir,
+      String buildkitStateVolume,
       Settings settings) {
     this.docker = docker;
     this.dockerBinary = dockerBinary;
     this.runnerId = runnerId;
     this.self = self;
     this.stateDir = stateDir;
+    this.buildkitStateVolume = buildkitStateVolume;
     this.settings = settings;
   }
 
@@ -130,7 +133,9 @@ public final class Decommission {
     Docker.Result started;
     try {
       started =
-          docker.run(RunnerArgv.runDecommissioner(dockerBinary, runnerId, image, volume));
+          docker.run(
+              RunnerArgv.runDecommissioner(
+                  dockerBinary, runnerId, image, volume, buildkitStateVolume));
     } catch (IllegalArgumentException refused) {
       LOG.warnf("ci-runner cannot start its decommission helper: %s", refused.getMessage());
       return;
@@ -158,6 +163,7 @@ public final class Decommission {
       String dockerBinary,
       String runnerId,
       String volume,
+      String buildkitVolume,
       Optional<String> self,
       Settings settings,
       Consumer<String> say) {
@@ -189,7 +195,11 @@ public final class Decommission {
       say.accept("could not list runner " + runnerId + "'s step containers: " + steps.detail());
       clean = false;
     }
-    removeBuildPlane(docker, dockerBinary, say);
+    String actualBuildkitVolume =
+        (buildkitVolume == null || buildkitVolume.isBlank())
+            ? BuildPlane.STATE_VOLUME
+            : buildkitVolume;
+    removeBuildPlane(docker, dockerBinary, actualBuildkitVolume, say);
     if (volume != null && !volume.isBlank()) {
       clean &= removeVolume(docker, dockerBinary, volume, settings, say);
     }
@@ -228,9 +238,13 @@ public final class Decommission {
    * The node's shared {@link BuildPlane} — one runner per node, so a deleted runner is the node's
    * only claim on its builder and takes it too. Best-effort and never {@code clean &= }: a builder
    * that would not go is an operator's cleanup, not a reason to leave the runner itself
-   * undecommissioned.
+   * undecommissioned. {@code buildkitVolume} is the volume the deleted runner actually configured
+   * ({@link BuildPlane#STATE_VOLUME} unless it set {@code QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME}) —
+   * never the constant, so a runner pointed at its own volume does not leave the platform's shared
+   * one untouched, or, worse, remove it.
    */
-  private static void removeBuildPlane(Docker docker, String dockerBinary, Consumer<String> say) {
+  private static void removeBuildPlane(
+      Docker docker, String dockerBinary, String buildkitVolume, Consumer<String> say) {
     Docker.Result container = docker.run(RunnerArgv.rm(dockerBinary, BuildPlane.CONTAINER));
     if (container.ok()) {
       say.accept("removed the builder " + BuildPlane.CONTAINER);
@@ -238,15 +252,12 @@ public final class Decommission {
       say.accept(
           "could not remove the builder " + BuildPlane.CONTAINER + ": " + container.detail());
     }
-    Docker.Result volume = docker.run(RunnerArgv.volumeRm(dockerBinary, BuildPlane.STATE_VOLUME));
+    Docker.Result volume = docker.run(RunnerArgv.volumeRm(dockerBinary, buildkitVolume));
     if (volume.ok() || volume.detail().toLowerCase().contains("no such volume")) {
-      say.accept("removed the builder's state volume " + BuildPlane.STATE_VOLUME);
+      say.accept("removed the builder's state volume " + buildkitVolume);
     } else {
       say.accept(
-          "could not remove the builder's state volume "
-              + BuildPlane.STATE_VOLUME
-              + ": "
-              + volume.detail());
+          "could not remove the builder's state volume " + buildkitVolume + ": " + volume.detail());
     }
     Docker.Result network = docker.run(RunnerArgv.networkRm(dockerBinary, BuildPlane.NETWORK));
     if (network.ok() || network.detail().toLowerCase().contains("not found")) {

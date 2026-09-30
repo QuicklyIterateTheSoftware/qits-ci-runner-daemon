@@ -71,6 +71,29 @@ class RunnerEnvTest {
     assertEquals("docker", env.dockerBinary());
     assertEquals(120, env.dockerTimeoutSeconds());
     assertEquals("moby/buildkit:v0.33.0", env.buildkitImage());
+    assertEquals(BuildPlane.STATE_VOLUME, env.buildkitStateVolume());
+  }
+
+  @Test
+  void theBuildkitStateVolumeDefaultsToBuildPlanesAndIsOverridable() throws Exception {
+    RunnerEnv unset =
+        RunnerEnv.parse(
+            "https://ci.example", "r1", null, null, null, null, null, null, null, null, null, null,
+            null);
+    assertEquals("qits-buildkitd-state", unset.buildkitStateVolume());
+    assertEquals(BuildPlane.STATE_VOLUME, unset.buildkitStateVolume());
+
+    RunnerEnv blank =
+        RunnerEnv.parse(
+            "https://ci.example", "r1", null, null, null, null, null, null, null, null, null, null,
+            "  ");
+    assertEquals(BuildPlane.STATE_VOLUME, blank.buildkitStateVolume());
+
+    RunnerEnv set =
+        RunnerEnv.parse(
+            "https://ci.example", "r1", null, null, null, null, null, null, null, null, null, null,
+            " operators-own-buildkitd-state ");
+    assertEquals("operators-own-buildkitd-state", set.buildkitStateVolume());
   }
 
   @Test

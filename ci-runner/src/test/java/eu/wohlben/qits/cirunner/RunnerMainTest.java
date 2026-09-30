@@ -123,7 +123,13 @@ class RunnerMainTest {
                         held),
                 telemetry,
                 new Decommission(
-                    d, docker.binary, "r1", self, state, new Decommission.Settings(200, 20, 2))));
+                    d,
+                    docker.binary,
+                    "r1",
+                    self,
+                    state,
+                    BuildPlane.STATE_VOLUME,
+                    new Decommission.Settings(200, 20, 2))));
     exit = CompletableFuture.supplyAsync(runner::run);
     return exit;
   }

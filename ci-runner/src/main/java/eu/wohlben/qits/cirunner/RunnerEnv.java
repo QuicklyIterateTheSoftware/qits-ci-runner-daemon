@@ -26,7 +26,8 @@ public record RunnerEnv(
     List<String> buildkitHttpRegistries,
     List<String> buildkitRegistryMirrors,
     long rolloverTimeoutSeconds,
-    boolean selfUpdate) {
+    boolean selfUpdate,
+    String buildkitStateVolume) {
 
   /**
    * {@code QITS_CI_RUNNER_SELF_UPDATE}: whether an {@code Upgrade} makes this runner roll itself over
@@ -35,6 +36,16 @@ public record RunnerEnv(
    * {@code Upgrade} and says so in its capability labels ({@link Main#SELF_UPDATE_LABEL}).
    */
   public static final String SELF_UPDATE = "QITS_CI_RUNNER_SELF_UPDATE";
+
+  /**
+   * {@code QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME}: the volume {@link BuildPlane}'s builder keeps its
+   * content store in. Read here (rather than left a {@link BuildPlane} constant) because {@link
+   * Decommission}'s helper — a fresh process, not this one — needs the same value to remove the
+   * volume this runner actually used, not the default. Defaults to {@link BuildPlane#STATE_VOLUME},
+   * the platform builder's own volume: sharing it costs nothing but a warm cache on the one host
+   * where both run, which is the point of the default.
+   */
+  public static final String BUILDKIT_STATE_VOLUME = "QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME";
 
   /**
    * A registry as buildkitd.toml names it: {@code host[:port]}. Checked here because the value is
@@ -155,6 +166,28 @@ public record RunnerEnv(
       String rolloverTimeout,
       String selfUpdate)
       throws Invalid {
+    return parse(
+        url, runnerId, registrationToken, stateDir, slots, dockerBinary, dockerTimeout,
+        buildkitImage, buildkitHttpRegistries, buildkitRegistryMirrors, rolloverTimeout,
+        selfUpdate, null);
+  }
+
+  /** The same, with {@link #BUILDKIT_STATE_VOLUME}. */
+  public static RunnerEnv parse(
+      String url,
+      String runnerId,
+      String registrationToken,
+      String stateDir,
+      String slots,
+      String dockerBinary,
+      String dockerTimeout,
+      String buildkitImage,
+      String buildkitHttpRegistries,
+      String buildkitRegistryMirrors,
+      String rolloverTimeout,
+      String selfUpdate,
+      String buildkitStateVolume)
+      throws Invalid {
     if (blank(url)) {
       throw new Invalid("QITS_CI_RUNNER_URL is not set");
     }
@@ -184,7 +217,8 @@ public record RunnerEnv(
             "QITS_CI_RUNNER_ROLLOVER_TIMEOUT",
             stripSeconds(rolloverTimeout),
             DEFAULT_ROLLOVER_TIMEOUT_SECONDS),
-        bool(SELF_UPDATE, selfUpdate, true));
+        bool(SELF_UPDATE, selfUpdate, true),
+        blank(buildkitStateVolume) ? BuildPlane.STATE_VOLUME : buildkitStateVolume.trim());
   }
 
   private static boolean bool(String variable, String value, boolean fallback) throws Invalid {

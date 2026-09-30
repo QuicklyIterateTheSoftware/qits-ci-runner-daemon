@@ -69,12 +69,16 @@ public class Main {
   static int decommissionHelper(String runnerId) {
     String binary = System.getenv("QITS_CI_RUNNER_DOCKER_BINARY");
     String volume = System.getenv(RunnerArgv.DECOMMISSION_VOLUME_ENV);
+    String buildkitVolume = System.getenv(RunnerEnv.BUILDKIT_STATE_VOLUME);
     try {
       return Decommission.finish(
           Docker.forking(120),
           binary == null || binary.isBlank() ? "docker" : binary.strip(),
           runnerId,
           volume == null || volume.isBlank() ? null : volume.strip(),
+          buildkitVolume == null || buildkitVolume.isBlank()
+              ? BuildPlane.STATE_VOLUME
+              : buildkitVolume.strip(),
           SelfContainer.detect(),
           Decommission.Settings.defaults(),
           line -> System.out.println("qits-ci-runner decommission: " + line));
@@ -132,6 +136,9 @@ public class Main {
     @ConfigProperty(name = "qits.ci.runner.self-update")
     Optional<String> selfUpdate;
 
+    @ConfigProperty(name = "qits.ci.runner.buildkit-state-volume")
+    Optional<String> buildkitStateVolume;
+
     @ConfigProperty(name = "qits.ci.runner.heartbeat-interval-ms", defaultValue = "10000")
     long heartbeatMillis;
 
@@ -162,7 +169,8 @@ public class Main {
                 buildkitHttpRegistries.orElse(null),
                 buildkitRegistryMirrors.orElse(null),
                 rolloverTimeout.orElse(null),
-                selfUpdate.orElse(null));
+                selfUpdate.orElse(null),
+                buildkitStateVolume.orElse(null));
         telemetryUrl = RunnerEnv.telemetryUrl(System.getenv(TELEMETRY_URL), env.url());
       } catch (RunnerEnv.Invalid invalid) {
         // The container's log is the only channel before anything is dialled, so this line is the whole
@@ -216,7 +224,8 @@ public class Main {
               env.buildkitImage(),
               env.buildkitHttpRegistries(),
               env.buildkitRegistryMirrors(),
-              caBundleCandidates(self));
+              caBundleCandidates(self),
+              env.buildkitStateVolume());
       // The record of step images lives beside client.json, so a successor inherits it.
       StepImages stepImages =
           new StepImages(
@@ -254,6 +263,7 @@ public class Main {
                       env.runnerId(),
                       self,
                       env.stateDir(),
+                      env.buildkitStateVolume(),
                       Decommission.Settings.defaults()),
                   new Housekeeping(
                       docker,
