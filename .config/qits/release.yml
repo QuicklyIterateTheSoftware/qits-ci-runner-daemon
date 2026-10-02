@@ -14,11 +14,9 @@ artifacts:
   # IS the tag of the image published beside it. qits-ci pins this coordinate in its pom and renders
   # the install script's image, and every Upgrade's, from the constant.
   #
-  # AND IT CARRIES NO `sbom:`, WHICH IS NOT THE DOCUMENT GOING MISSING. The composed postlude runs
-  # in ONE step — the last one that builds — and a step container shares nothing with the next: the
-  # jar's document is written by `makeBom` in the maven step below, whose files the builder step has
-  # never seen. So the jar submits its own document from the container that produced it.
-  - { type: maven, name: "eu.wohlben.qits:qits-ci-runner-protocol", path: ci-runner-protocol }
+  # qits-ci submits this `sbom:` from whichever release step holds the file — the maven step below,
+  # where `makeBom` writes it — and checks on the last step that it reached the store.
+  - { type: maven, name: "eu.wohlben.qits:qits-ci-runner-protocol", path: ci-runner-protocol, sbom: ci-runner-protocol/target/sbom.json }
 
 # AN IMAGE AND A JAR FROM ONE TREE, WHICH NO ARCHETYPE PUBLISHES — the shape of qits-workspace-daemon
 # and qits-projects-daemon, which name `java-service` for the family and declare both slots
@@ -200,9 +198,3 @@ release:
         -Dqits.maven.repository.url="$QITS_MAVEN_REGISTRY_URL" \
         org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeBom \
         -DoutputFormat=json -DoutputName=sbom -DschemaVersion=1.6
-      # SUBMITTED HERE BECAUSE THE POSTLUDE CANNOT REACH IT — see the artifact's comment above. The
-      # CLI is on this step's PATH like any release step's, and its idempotency policy is the one
-      # the postlude runs, so a re-fired release resubmitting identical bytes is still green.
-      qits artifacts publish sbom submit \
-        --type maven --name "eu.wohlben.qits:qits-ci-runner-protocol" \
-        --version "$QITS_VERSION" --file ci-runner-protocol/target/sbom.json
