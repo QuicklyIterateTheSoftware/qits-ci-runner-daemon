@@ -18,7 +18,7 @@ artifacts:
   # in ONE step — the last one that builds — and a step container shares nothing with the next: the
   # jar's document is written by `makeBom` in the maven step below, whose files the builder step has
   # never seen. So the jar submits its own document from the container that produced it.
-  - { type: maven, name: "eu.wohlben.qits:qits-ci-runner-protocol" }
+  - { type: maven, name: "eu.wohlben.qits:qits-ci-runner-protocol", path: ci-runner-protocol }
 
 # AN IMAGE AND A JAR FROM ONE TREE, WHICH NO ARCHETYPE PUBLISHES — the shape of qits-workspace-daemon
 # and qits-projects-daemon, which name `java-service` for the family and declare both slots
