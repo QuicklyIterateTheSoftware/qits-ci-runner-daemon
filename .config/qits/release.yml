@@ -192,26 +192,6 @@ release:
   - image: qits/build-images/maven-base:latest
     timeout-seconds: 1800
     script: |
-      # ALREADY PUBLISHED IS A SKIP, NOT A FAILURE, and the parent is checked beside the child: a
-      # `-am` deploy writes both, and a run that resolved only one of them has published half a
-      # coordinate. Re-running a maven deploy is a no-op; re-running it against an occupied
-      # coordinate is not, so the guard stays.
-      # ON THE EDGE PLANE THE REGISTRY ANSWERS AN ANONYMOUS READ 401 (qits-441), which this guard
-      # would read as "not published" and so re-deploy an occupied coordinate on a retry. There the
-      # run's token rides as the Basic password — the edge introspects a qits_tok_ whatever the
-      # username; qits-ci sets $QITS_TOKEN on that plane alone — and in-network the read stays
-      # anonymous.
-      set --
-      if [ -n "${QITS_TOKEN:-}" ]; then
-        set -- -u "${QITS_TOKEN_SUBJECT:-qits-ci-run}:$QITS_TOKEN"
-      fi
-      if curl -fsS "$@" -o /dev/null \
-        "$QITS_MAVEN_REGISTRY_URL/eu/wohlben/qits/qits-ci-runner-protocol/$QITS_VERSION/qits-ci-runner-protocol-$QITS_VERSION.pom" \
-        && curl -fsS "$@" -o /dev/null \
-          "$QITS_MAVEN_REGISTRY_URL/eu/wohlben/qits/$QITS_VERSION/qits-$QITS_VERSION.pom"; then
-        echo "qits-ci-runner-protocol $QITS_VERSION and its parent are already published — skipping"
-        exit 0
-      fi
       # NO LONGER A DEPLOY: the CLI publishes this coordinate from the postlude, off the jar this
       # step leaves in target/. This step only has to build it.
       ./mvnw -B -ntp -s .qits-maven-settings.xml -pl ci-runner-protocol -am package -DskipTests
