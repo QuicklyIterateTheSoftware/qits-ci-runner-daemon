@@ -34,16 +34,14 @@ WORKDIR /qits-build
 # compile of one tree. `.dockerignore` keeps target/ and out/ out of the context.
 COPY . .
 
-# Where Maven Central is mirrored, when it is: CI passes the platform mirror's in-network route;
-# EMPTY — the default, and every hand build — deactivates `.qits-maven-settings.xml`'s central-proxy
-# profile and the resolve goes to Maven Central directly.
+# Where Maven Central is mirrored: https://mirror.qits.$QITS_DOMAIN/mirror/maven/central, qits-mirror's
+# cache — derived inside the RUN below from the one ARG, and answers 401 anonymously, so every build
+# that resolves through it needs a credential (qits-731).
 #
 # The credential is the two secret mounts on the mvnw RUN below, exported as the QITS_MAVEN_AUTH_USR/
-# QITS_MAVEN_AUTH_PSW `.qits-maven-settings.xml` reads for `qits-central-proxy`: on a remote runner
-# the proxy is the public mirror, which answers anonymously 401; in-network it never challenges, so
-# Maven never sends them there. qits-ci-daemon's docker/Dockerfile has the measurement.
-ARG QITS_MAVEN_CENTRAL_URL=
-ENV QITS_MAVEN_CENTRAL_URL=$QITS_MAVEN_CENTRAL_URL
+# QITS_MAVEN_AUTH_PSW `.qits-maven-settings.xml` reads for `qits-central-proxy`. qits-ci-daemon's
+# docker/Dockerfile has the measurement.
+ARG QITS_DOMAIN=wohlben.eu
 
 # `quarkus.native.container-build=false`: we are already inside the container it would have launched.
 #
@@ -59,6 +57,7 @@ RUN --mount=type=secret,id=qits-client-id \
     --mount=type=secret,id=qits-client-secret \
     export QITS_MAVEN_AUTH_USR="$(cat /run/secrets/qits-client-id 2>/dev/null || true)"; \
     export QITS_MAVEN_AUTH_PSW="$(cat /run/secrets/qits-client-secret 2>/dev/null || true)"; \
+    export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$QITS_DOMAIN/mirror/maven/central"; \
     ./mvnw -B -ntp -s .qits-maven-settings.xml -pl ci-runner -am package -Dnative -DskipTests \
       -Dquarkus.native.container-build=false \
       org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeBom \
