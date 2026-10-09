@@ -40,8 +40,23 @@
              (the shared health report wire, HealthWire) in ci-runner-protocol, and
              qits-runner-toolkit (the health-check machinery, and nothing else yet — moving the
              runner onto RunnerRuntime is qits-772) in ci-runner. -->
-        <qits.runner.version>2026.1009.999999</qits.runner.version>
+        <qits.runner.version>2026.1009.111006</qits.runner.version>
+
+        <!-- Where the platform publishes it. Overridden by CI (-Dqits.maven.repository.url), derived
+             from QITS_DOMAIN; the default below is the public host. -->
+        <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
     </properties>
+
+    <!-- The platform's own Maven repository: qits-runner-protocol, qits-runner-toolkit and the
+         qits-containers-driver beneath it live only here. The id has to stay `qits-maven` — it is
+         what the settings file's exact-id mirror matches (Maven blocks external http:// repositories
+         otherwise) and what a locally cached copy is recorded under. -->
+    <repositories>
+        <repository>
+            <id>qits-maven</id>
+            <url>${qits.maven.repository.url}</url>
+        </repository>
+    </repositories>
 
     <dependencyManagement>
         <dependencies>

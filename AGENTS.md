@@ -6,11 +6,12 @@ qits-ci-daemon's `AGENTS.md`; where the two repositories differ, it says why.
 
 ## The rules that shape everything
 
-**A clone of this repo alone builds and tests green.** No monorepo, no docker, no prior `mvn
-install` elsewhere, no credentials, no network. `./mvnw verify` and `sh
-scripts/test-install-contract.sh` are the gate. That is why the protocol module is self-contained,
-why the suite points the runner at a shell script that answers like docker instead of a docker, and
-why the install test puts a stub `docker` on `PATH` rather than needing one.
+**A clone of this repo alone builds and tests green** — given the platform's maven repository,
+which `qits-runner-protocol` and `qits-runner-toolkit` are published to. No monorepo, no docker, no
+prior `mvn install` elsewhere, no credentials. `./mvnw verify` and `sh
+scripts/test-install-contract.sh` are the gate. That is why the protocol module is otherwise
+self-contained, why the suite points the runner at a shell script that answers like docker instead
+of a docker, and why the install test puts a stub `docker` on `PATH` rather than needing one.
 
 **It compiles to a fully static musl GraalVM native image**, with qits-ci-daemon's toolchain and for
 its reason, sharpened: a runner host is whatever Linux a person had. Every dependency is a decision

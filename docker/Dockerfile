@@ -34,12 +34,18 @@ WORKDIR /qits-build
 # compile of one tree. `.dockerignore` keeps target/ and out/ out of the context.
 COPY . .
 
-# Where Maven Central is mirrored: https://mirror.qits.$QITS_DOMAIN/mirror/maven/central, qits-mirror's
-# cache — derived inside the RUN below from the one ARG, and answers 401 anonymously, so every build
-# that resolves through it needs a credential (qits-731).
+# Both platform hosts are code plus one input, the public domain (qits-731):
 #
-# The credential is the two secret mounts on the mvnw RUN below, exported as the QITS_MAVEN_AUTH_USR/
-# QITS_MAVEN_AUTH_PSW `.qits-maven-settings.xml` reads for `qits-central-proxy`. qits-ci-daemon's
+#   https://registry.qits.$QITS_DOMAIN/artifacts/maven/maven   hosted Maven (qits-artifacts)
+#     qits-runner-protocol and qits-runner-toolkit live only here. `-s .qits-maven-settings.xml` is
+#     what makes it resolvable: its exact-id `qits-maven-network` mirror is the one thing that
+#     outranks Maven's http blocker, and it reads QITS_MAVEN_REPOSITORY_URL — set in the RUN below,
+#     as qits-workspaces-runner-daemon's docker/Dockerfile sets it.
+#   https://mirror.qits.$QITS_DOMAIN/mirror/maven/central      Maven Central cache (qits-mirror)
+#
+# Both answer 401 anonymously on the edge, so every build that resolves through them needs a
+# credential: the two secret mounts on the mvnw RUN below, exported as the QITS_MAVEN_AUTH_USR/
+# QITS_MAVEN_AUTH_PSW `.qits-maven-settings.xml` reads for both servers. qits-ci-daemon's
 # docker/Dockerfile has the measurement.
 ARG QITS_DOMAIN=wohlben.eu
 
@@ -58,7 +64,9 @@ RUN --mount=type=secret,id=qits-client-id \
     export QITS_MAVEN_AUTH_USR="$(cat /run/secrets/qits-client-id 2>/dev/null || true)"; \
     export QITS_MAVEN_AUTH_PSW="$(cat /run/secrets/qits-client-secret 2>/dev/null || true)"; \
     export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$QITS_DOMAIN/mirror/maven/central"; \
+    export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$QITS_DOMAIN/artifacts/maven/maven"; \
     ./mvnw -B -ntp -s .qits-maven-settings.xml -pl ci-runner -am package -Dnative -DskipTests \
+      -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
       -Dquarkus.native.container-build=false \
       org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeBom \
       -DoutputFormat=json -DoutputName=sbom -DschemaVersion=1.6 \
