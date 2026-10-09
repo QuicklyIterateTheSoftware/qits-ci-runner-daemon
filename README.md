@@ -177,16 +177,22 @@ itself and the rest are still reported:
 | `buildkit` | `{container, presence, state, stamp, configuredStamp, address, image, stateVolume}` | `qits-ci-runner-buildkitd` is running under the stamp the next build would start it with — or was never created, because no build on this node has needed it yet |
 | `network` | `{network, presence, driver, builder}` | the `qits-ci-runner` bridge exists — or is missing while no builder exists either ("not needed yet") |
 | `idRange` | `{idRange, fullIdRange, narrow}` | the user namespace maps the full uid/gid space; fails with the same words as the boot-time warning (a rootless docker or unprivileged LXC host maps too few; qits-ci then hands it no build step), unknown is ok |
-| `stepImage` | `{image, requested, present, pulled}` | the step image is on the node, or `docker pull` fetches it within 180 s |
+| `stepImage` | `{image, requested, present, pulled}`, plus `authRequired: true` on the one pull failure this check still calls ok | the step image is on the node, `docker pull` fetches it within 180 s, or the pull fails only because the registry wants a credential a run would bring |
 
 The first three are qits-runner-javalib's defaults (`qits-runner-toolkit`, `HealthChecks`), the rest
 CI's own. Every check is read-only but one: `stepImage` pulls an image that is not here — what the
 next run would do anyway — and records it for housekeeping like a launch's. It pulls under this
 host's docker login, never a run's (a health frame carries no credential), so on a registry that
-refuses an anonymous pull only an image already present passes. The image is the request's `image`
-when it names one (the host sends it resolved, with its registry, as it resolves a step's), else
-`qits/build-images/ci-base:latest` on `registry.<domain>` when the CI url is `https://ci.<domain>`,
-else that bare name, which only a local copy answers.
+refuses an anonymous pull a real run would still pull it with its own; that is not a node fault, so
+a pull refused for want of a credential (docker's wording for it: "unauthorized", "authentication
+required", "no basic auth credentials", "denied: requested access to the resource is denied", "pull
+access denied", or the platform registry's own "client credentials required") is `ok` with
+`authRequired: true` rather than failing the node. Every other pull failure — a timeout, a
+connection refused, an unknown manifest, no such host — still fails the check. The image is the
+request's `image` when it names one (the host sends it resolved, with its registry, as it resolves
+a step's, usually a digest-pinned reference), else `qits/build-images/ci-base:latest` on
+`registry.<domain>` when the CI url is `https://ci.<domain>`, else that bare name, which only a
+local copy answers.
 
 `nodeInventory` lists the step containers (each with the run id in its `qits.ci.runner.run` label;
 the inventory's numeric `rowId` reads null for these UUIDs) and the runner's own container. Its

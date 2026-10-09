@@ -231,14 +231,69 @@ class CiHealthChecksTest {
   }
 
   @Test
-  void aPullTheRegistryRefusesFailsWithDockersWords() throws Exception {
+  void aPullTheRegistryRefusesForWantOfACredentialIsOkWithAuthRequired() throws Exception {
     fake.answer("image-inspect", 1, "", "Error: No such image: " + IMAGE);
     fake.answer("pull", 1, "", "unauthorized: authentication required");
     RunnerHealthCheck.Result result = run(new StepImageCheck());
-    assertFalse(result.ok());
-    assertTrue(result.detail().contains("unauthorized"), result.detail());
-    assertTrue(result.detail().contains("not a run's"), result.detail());
+    assertTrue(result.ok(), result.detail());
+    assertTrue(result.detail().contains("registry wants a run's credential"), result.detail());
+    assertEquals(true, result.data().get("authRequired"));
+    assertEquals(false, result.data().get("present"));
+    assertEquals(false, result.data().get("pulled"));
     assertFalse(images.record().containsKey(IMAGE));
+  }
+
+  @Test
+  void aPullTheRegistryRefusesWithThePlatformRegistrysOwnWordingIsOkWithAuthRequired()
+      throws Exception {
+    fake.answer("image-inspect", 1, "", "Error: No such image: " + IMAGE);
+    fake.answer(
+        "pull", 1, "", "Error response from daemon: error from registry: client credentials"
+            + " required");
+    RunnerHealthCheck.Result result = run(new StepImageCheck());
+    assertTrue(result.ok(), result.detail());
+    assertEquals(true, result.data().get("authRequired"));
+  }
+
+  @Test
+  void aPullDeniedByAccessControlIsOkWithAuthRequired() throws Exception {
+    fake.answer("image-inspect", 1, "", "Error: No such image: " + IMAGE);
+    fake.answer("pull", 1, "", "Error response from daemon: pull access denied for " + IMAGE
+        + ", repository does not exist or may require 'docker login': denied: requested access"
+        + " to the resource is denied");
+    RunnerHealthCheck.Result result = run(new StepImageCheck());
+    assertTrue(result.ok(), result.detail());
+    assertEquals(true, result.data().get("authRequired"));
+  }
+
+  @Test
+  void aPullFailureThatIsNotAboutCredentialsStillFailsTheCheck() throws Exception {
+    fake.answer("image-inspect", 1, "", "Error: No such image: " + IMAGE);
+    fake.answer(
+        "pull",
+        1,
+        "",
+        "Error response from daemon: Get \"https://registry.example/v2/\": dial tcp: lookup"
+            + " registry.example: no such host");
+    RunnerHealthCheck.Result result = run(new StepImageCheck());
+    assertFalse(result.ok());
+    assertTrue(result.detail().contains("no such host"), result.detail());
+    assertEquals(null, result.data().get("authRequired"));
+    assertFalse(images.record().containsKey(IMAGE));
+  }
+
+  @Test
+  void aDigestPinnedStepImageThatIsPresentIsOk() throws Exception {
+    String digestImage =
+        "registry.qits.wohlben.eu/qits/build-images/ci-base"
+            + "@sha256:98ede416f4c7bc5ef8210f4e8db4fd84c44c9295c1bc53e744377ede57eb8d85";
+    RunnerHealthCheck.Result result = new StepImageCheck().run(ctx(WIDE, digestImage));
+    assertTrue(result.ok(), result.detail());
+    assertEquals(true, result.data().get("present"));
+    assertEquals(digestImage + " is present", result.detail());
+    assertEquals(
+        List.of(List.of("image", "inspect", "--format", "{{.Id}}", digestImage)),
+        fake.calls("image"));
   }
 
   @Test
