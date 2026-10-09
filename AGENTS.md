@@ -38,9 +38,18 @@ container with its own `docker inspect`ed parameters (`Rollover`); the install s
 ## Module conventions
 
 `eu.wohlben.qits.cirunner.*`, one package per module, no split packages. The protocol module is
-**framework-free**: plain records, plain constructors, no annotations, no dependency.
+**framework-free**: plain records, plain constructors, no annotations, and one dependency only —
+`qits-runner-protocol`, itself dependency-free, for the health report every runner kind shares.
 
-**`Main` is the only CDI bean.** `RunnerMain`, `ControlSocket`, `Registration`, `Bearer`,
+**qits-runner-javalib, for health only.** Both jars are taken at one version, the root pom's
+`qits.runner.version`. `ci-runner` uses the toolkit's `toolkit.health` package (and
+`DockerCommand`/`RunnerIdentity` for it) and nothing else: moving the runner onto `RunnerRuntime` is
+qits-772, not something to do one class at a time.
+
+**`Main` is the only CDI bean**, but for the node health checks: each a `@Singleton` implementing
+`RunnerHealthCheck` with no constructor argument, collected by `Main`'s `@All
+List<RunnerHealthCheck>` and given what it reads through `HealthContext.lookup` (see `CiHealth`).
+`RunnerMain`, `ControlSocket`, `Registration`, `Bearer`,
 `Launcher`, `Reaper`, `BootSweep`, `BuildPlane`, `Reservations` and `Rollover` are plain classes
 taking everything as constructor arguments, which is what lets `RunnerMainTest` drive the whole runner
 against a real socket. A class below `Main` cannot read configuration; do not reach for

@@ -96,6 +96,15 @@ public final class Launcher {
   }
 
   /**
+   * The builder the next {@link #launch} ensures — the env-configured one merged with the latest
+   * {@code Ack}'s mirrors. The {@code buildkit} health check reads its stamp, which is "current"
+   * only against this instance, never against {@link #envBuildPlane}.
+   */
+  public BuildPlane buildPlane() {
+    return buildPlane.get();
+  }
+
+  /**
    * qits-ci's {@code Ack} carried a registry-mirror map for the builder ({@link
    * eu.wohlben.qits.cirunner.protocol.Ack#registryMirrors()}): merge it over the env-configured
    * mirrors and swap the {@link BuildPlane} the next {@link #launch} will {@link BuildPlane#ensure

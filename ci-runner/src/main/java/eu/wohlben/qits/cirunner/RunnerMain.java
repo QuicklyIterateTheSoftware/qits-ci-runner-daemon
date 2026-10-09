@@ -3,6 +3,8 @@ package eu.wohlben.qits.cirunner;
 import eu.wohlben.qits.cirunner.protocol.Ack;
 import eu.wohlben.qits.cirunner.protocol.Backlog;
 import eu.wohlben.qits.cirunner.protocol.Cancel;
+import eu.wohlben.qits.cirunner.protocol.HealthCheck;
+import eu.wohlben.qits.cirunner.protocol.HealthChecked;
 import eu.wohlben.qits.cirunner.protocol.Capabilities;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerBinary;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerMessage;
@@ -18,7 +20,9 @@ import eu.wohlben.qits.cirunner.protocol.Reserve;
 import eu.wohlben.qits.cirunner.protocol.Retire;
 import eu.wohlben.qits.cirunner.protocol.Take;
 import eu.wohlben.qits.cirunner.protocol.Upgrade;
+import eu.wohlben.qits.runner.toolkit.health.SessionFacts;
 import io.vertx.core.Vertx;
+import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -66,7 +70,33 @@ public final class RunnerMain implements ControlSocket.Listener {
       Rollover.Factory rollover,
       Telemetry telemetry,
       Decommission decommission,
-      Housekeeping housekeeping) {
+      Housekeeping housekeeping,
+      CiHealth health) {
+
+    /** The parts of a runner with no node health checks: a {@code HealthCheck} is answered not ok. */
+    public Parts(
+        Registration registration,
+        java.util.function.Function<ClientCredentials, ControlSocket.Settings> settings,
+        BootSweep sweep,
+        Launcher launcher,
+        Reaper reaper,
+        Capabilities capabilities,
+        java.util.function.Function<ClientCredentials, Bearer> bearer,
+        Rollover.Factory rollover,
+        Telemetry telemetry,
+        Decommission decommission,
+        Housekeeping housekeeping) {
+      this(
+          registration, settings, sweep, launcher, reaper, capabilities, bearer, rollover,
+          telemetry, decommission, housekeeping, null);
+    }
+
+    /** These parts, answering {@code HealthCheck} with {@code health}. */
+    public Parts withHealth(CiHealth health) {
+      return new Parts(
+          registration, settings, sweep, launcher, reaper, capabilities, bearer, rollover,
+          telemetry, decommission, housekeeping, health);
+    }
 
     /** The parts of a runner that collects none of its disk's garbage. */
     public Parts(
@@ -151,6 +181,12 @@ public final class RunnerMain implements ControlSocket.Listener {
 
   /** The slot cap of the newest {@code Ack}. */
   private volatile int ackedSlots;
+
+  /** Whether any {@code Ack} arrived yet — until then the {@code session} check's slots are null. */
+  private volatile boolean acked;
+
+  /** When this session's first {@code Ack} admitted the runner; null while not connected. */
+  private volatile Instant connectedSince;
   private volatile Rollover rollover;
 
   /** Set once, by the first of the ways a runner learns it was deleted. */
@@ -210,6 +246,9 @@ public final class RunnerMain implements ControlSocket.Listener {
       }
       if (parts.housekeeping() != null) {
         parts.housekeeping().shutdown();
+      }
+      if (parts.health() != null) {
+        parts.health().close();
       }
       workers.shutdownNow();
       parts.telemetry().stop(TELEMETRY_LAST_WORDS_MILLIS);
@@ -291,6 +330,8 @@ public final class RunnerMain implements ControlSocket.Listener {
         quarantined = false;
         LOG.infof("ci-runner reinstated by %s", reinstated.by());
       }
+      // Docker calls under deadlines of up to minutes: off the loop, like every docker answer.
+      case HealthCheck check -> workers.execute(() -> send(answer(check)));
       default ->
           // Everything else in the sealed set is runner→host; a host echoing one is not a
           // conversation this version has.
@@ -308,6 +349,9 @@ public final class RunnerMain implements ControlSocket.Listener {
       return;
     }
     LOG.infof("ci-runner connected slots=%d", ack.slots());
+    if (connectedSince == null) {
+      connectedSince = Instant.now();
+    }
     // Admitted: healthy from now, rather than one heartbeat interval from now.
     beat();
     parts.launcher().onAck(ack.registryMirrors());
@@ -336,6 +380,7 @@ public final class RunnerMain implements ControlSocket.Listener {
     // The newest Ack's number, whichever callback applies it: a re-sent Ack during the cancels
     // waits for them too.
     ackedSlots = ack.slots();
+    acked = true;
     carriedReaped.whenComplete((done, failure) -> reserveIf(reservations.onAck(ackedSlots)));
     // The first Ack is this version proven on the wire, so whatever this runner ran before it is
     // done with. Once per process (Rollover keeps the latch), and off the loop: it can wait a minute.
@@ -436,8 +481,41 @@ public final class RunnerMain implements ControlSocket.Listener {
         });
   }
 
+  /**
+   * Run the node's health checks and answer with every one's outcome. Never throws: a registry that
+   * could not run at all is still an answer, not ok, so the host's wait ends with a reason.
+   */
+  HealthChecked answer(HealthCheck check) {
+    CiHealth health = parts.health();
+    if (health == null) {
+      return new HealthChecked(
+          false, "this runner has no node health checks", check.requestId(), List.of());
+    }
+    try {
+      HealthChecked answer =
+          HealthChecked.of(health.check(check.requestId(), check.image(), sessionFacts()));
+      LOG.infof("ci-runner answered health check %s: %s", check.requestId(), answer.detail());
+      return answer;
+    } catch (RuntimeException e) {
+      LOG.warnf("ci-runner could not run its health checks: %s", e.getMessage());
+      return new HealthChecked(
+          false,
+          "the health checks could not run: " + e.getClass().getSimpleName() + ": " + e.getMessage(),
+          check.requestId(),
+          List.of());
+    }
+  }
+
+  /** The {@code session} check's facts: admitted since when, the {@code Ack}'s slots, held runs. */
+  SessionFacts sessionFacts() {
+    Instant since = connectedSince;
+    return new SessionFacts(
+        since != null, since, acked ? ackedSlots : null, reservations.heldRuns());
+  }
+
   @Override
   public void onClosed() {
+    connectedSince = null;
     // The held runs are carried to the next session, whose Hello claims them and whose first Ack
     // says which the host kept: it waits a short grace for this runner before failing them, so a
     // blip no longer costs a running step.

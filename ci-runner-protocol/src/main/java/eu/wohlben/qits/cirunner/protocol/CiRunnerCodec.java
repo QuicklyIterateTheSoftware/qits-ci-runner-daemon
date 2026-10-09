@@ -3,6 +3,7 @@ package eu.wohlben.qits.cirunner.protocol;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerDecodeException.Reason;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerProtocol.Field;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerProtocol.Type;
+import eu.wohlben.qits.runner.protocol.health.HealthWire;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -133,6 +134,14 @@ public final class CiRunnerCodec {
         map.put(Field.TYPE, Type.REINSTATED);
         map.put(Field.BY, m.by());
       }
+      // The shared wire shape, type first; CI's own image rides after HealthWire's fields.
+      case HealthCheck m -> {
+        map.putAll(HealthWire.encodeCheck(m.requestId()));
+        if (m.image() != null) {
+          map.put(Field.IMAGE, m.image());
+        }
+      }
+      case HealthChecked m -> map.putAll(HealthWire.encodeChecked(m.report()));
     }
     return map;
   }
@@ -205,6 +214,9 @@ public final class CiRunnerCodec {
         case Type.QUARANTINED ->
             new Quarantined(str(map, Field.REASON), str(map, Field.SINCE));
         case Type.REINSTATED -> new Reinstated(str(map, Field.BY));
+        case Type.HEALTH_CHECK ->
+            new HealthCheck(HealthWire.decodeCheck(map), str(map, Field.IMAGE));
+        case Type.HEALTH_CHECKED -> HealthChecked.of(HealthWire.decodeChecked(map));
         default ->
             throw new CiRunnerDecodeException(
                 Reason.UNKNOWN_TYPE, type, "unknown ci-runner message type: " + type);

@@ -2,6 +2,8 @@ package eu.wohlben.qits.cirunner;
 
 import eu.wohlben.qits.cirunner.protocol.Capabilities;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerBinary;
+import eu.wohlben.qits.runner.toolkit.health.RunnerHealthCheck;
+import io.quarkus.arc.All;
 import io.quarkus.runtime.Quarkus;
 import io.quarkus.runtime.QuarkusApplication;
 import io.quarkus.runtime.annotations.QuarkusMain;
@@ -9,6 +11,7 @@ import io.vertx.core.Vertx;
 import jakarta.inject.Inject;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -20,7 +23,8 @@ import org.jboss.logging.Logger;
  * Entry point, and <b>the one CDI shell</b> — qits-ci-daemon's arrangement: it resolves
  * configuration, news up the plain classes that do the work, and hands the exit code back. Every
  * setting a class needs arrives as a constructor argument from here, and nothing below reads
- * configuration itself.
+ * configuration itself. The one other kind of bean is a node health check ({@link CiHealth}),
+ * collected here with {@code @All}; it takes no constructor argument and reads no configuration.
  */
 @QuarkusMain
 public class Main {
@@ -96,6 +100,15 @@ public class Main {
   public static class RunnerApplication implements QuarkusApplication {
 
     @Inject Vertx vertx;
+
+    /**
+     * CI's own node health checks ({@link BuildkitCheck}, {@link NetworkCheck}, {@link
+     * IdRangeCheck}, {@link StepImageCheck}, and any later {@code @Singleton} implementing {@link
+     * RunnerHealthCheck}). ArC resolves {@code @All} at build time, so the native image needs no
+     * reflection for it, and a bean injected here is used, so it is not removed as unused. ArC's
+     * order is not the wire's: {@link CiHealth#ordered} fixes it.
+     */
+    @Inject @All List<RunnerHealthCheck> healthChecks;
 
     // All Optional<String> and parsed by RunnerEnv: an empty `defaultValue` is read by SmallRye as
     // *no value* and kills the binary at startup with a message about config rather than about the
@@ -232,6 +245,22 @@ public class Main {
               env.stateDir().resolve(StepImages.FILE), System::currentTimeMillis);
       Launcher launcher =
           new Launcher(docker, env.dockerBinary(), env.runnerId(), buildPlane, stepImages);
+      // The node health check a HealthCheck frame asks for: the javalib's defaults, then the CI
+      // beans above. A check names its own deadline or gets three docker deadlines — room for the
+      // few docker calls one makes.
+      CiHealth health =
+          new CiHealth(
+              CiHealth.registry(
+                  Duration.ofSeconds(env.dockerTimeoutSeconds() * 3L),
+                  env.runnerId(),
+                  healthChecks),
+              CiHealth.dockerCommand(
+                  env.dockerBinary(), docker, env.dockerTimeoutSeconds(), Docker::forking),
+              launcher::buildPlane,
+              capabilities,
+              stepImages,
+              CiHealth.defaultStepImage(env.url()));
+      LOG.infof("ci-runner node health checks: %s", String.join(", ", health.names()));
       RunnerMain runner =
           new RunnerMain(
               vertx,
@@ -271,7 +300,8 @@ public class Main {
                       new RunnerImages(docker, env.dockerBinary(), self),
                       stepImages,
                       launcher::refreshBuilderIfStale,
-                      Housekeeping.Settings.defaults())));
+                      Housekeeping.Settings.defaults()))
+                  .withHealth(health));
       return runner.run();
     }
   }

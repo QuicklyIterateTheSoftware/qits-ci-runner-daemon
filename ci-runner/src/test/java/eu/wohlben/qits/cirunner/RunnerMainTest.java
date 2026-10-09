@@ -10,7 +10,10 @@ import eu.wohlben.qits.cirunner.protocol.Cancel;
 import eu.wohlben.qits.cirunner.protocol.Capabilities;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerBinary;
 import eu.wohlben.qits.cirunner.protocol.CiRunnerProtocol;
+import eu.wohlben.qits.cirunner.protocol.HealthCheck;
+import eu.wohlben.qits.cirunner.protocol.HealthChecked;
 import eu.wohlben.qits.cirunner.protocol.Heartbeat;
+import eu.wohlben.qits.runner.protocol.health.CheckResult;
 import eu.wohlben.qits.cirunner.protocol.Hello;
 import eu.wohlben.qits.cirunner.protocol.Launch;
 import eu.wohlben.qits.cirunner.protocol.LaunchFailed;
@@ -31,6 +34,7 @@ import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -98,6 +102,17 @@ class RunnerMainTest {
             null, selfUpdate);
     Docker d = docker.docker(10);
     Http http = new Http(vertx, 5_000);
+    Launcher launcher =
+        new Launcher(d, docker.binary, "r1", new BuildPlane(d, docker.binary, "moby/buildkit:v0.33.0"));
+    // The checks Main collects with @All, constructed by hand — the suite is not a Quarkus app.
+    CiHealth health =
+        new CiHealth(
+            CiHealth.registry(Duration.ofSeconds(30), "r1", CiHealth.builtIn()),
+            CiHealth.dockerCommand(docker.binary, d, 10, docker::docker),
+            launcher::buildPlane,
+            CAPS,
+            StepImages.inMemory(),
+            CiHealth.defaultStepImage(env.url()));
     runner =
         new RunnerMain(
             vertx,
@@ -107,7 +122,7 @@ class RunnerMainTest {
                 client ->
                     new ControlSocket.Settings(heartbeatMillis, 50, 200, refusalConfirmMillis, 3),
                 new BootSweep(d, docker.binary, "r1"),
-                new Launcher(d, docker.binary, "r1", new BuildPlane(d, docker.binary, "moby/buildkit:v0.33.0")),
+                launcher,
                 new Reaper(d, docker.binary, "r1"),
                 CAPS,
                 client -> new Bearer(http, client, System::currentTimeMillis),
@@ -129,7 +144,8 @@ class RunnerMainTest {
                     self,
                     state,
                     BuildPlane.STATE_VOLUME,
-                    new Decommission.Settings(200, 20, 2))));
+                    new Decommission.Settings(200, 20, 2)))
+            .withHealth(health));
     exit = CompletableFuture.supplyAsync(runner::run);
     return exit;
   }
@@ -173,6 +189,62 @@ class RunnerMainTest {
             List.of("ps", "-aq", "--filter", "label=qits.ci.runner=r1"),
             List.of("rm", "-f", "leftover1")),
         ReaperTest.withoutReads(docker.calls()).subList(0, 2));
+  }
+
+  /**
+   * qits-896: the host asks for the node's health and gets every named check back under its own
+   * request id — the javalib's defaults, then CI's — from a runner on a node no build has used yet,
+   * which is healthy: no builder and no network are "not needed yet", not failures.
+   */
+  @Test
+  void aHealthCheckIsAnsweredWithEveryNamedCheckUnderItsRequestId() throws Exception {
+    docker.answer("version", 0, "27.1.1\n", "");
+    docker.answerFor(
+        "inspect", BuildPlane.CONTAINER, 1, "", "Error: No such object: " + BuildPlane.CONTAINER);
+    docker.answer("network-inspect", 1, "", "Error: network qits-ci-runner not found");
+    ackWith(2, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+    awaitTrue(() -> runner.sessionFacts().connected());
+
+    host.send(new HealthCheck("req-7"));
+    HealthChecked answer = host.await(HealthChecked.class);
+
+    assertEquals("req-7", answer.requestId());
+    assertEquals(
+        List.of("docker", "nodeInventory", "session", "buildkit", "network", "idRange", "stepImage"),
+        answer.checks().stream().map(CheckResult::name).toList());
+    assertTrue(answer.ok(), answer.detail());
+    assertEquals("all 7 checks passed", answer.detail());
+    Map<String, Object> session = answer.checks().get(2).data();
+    assertEquals(true, session.get("connected"));
+    assertEquals(2L, ((Number) session.get("slots")).longValue());
+    assertEquals("27.1.1", answer.checks().get(0).data().get("serverVersion"));
+    // Nothing was created, started or pulled to answer it.
+    assertEquals(List.of(), docker.calls("run"));
+    assertEquals(List.of(), docker.calls("pull"));
+    assertEquals(List.of(), docker.calls("start"));
+  }
+
+  /** A failing check fails the answer, names itself in the detail, and the rest still report. */
+  @Test
+  void aHealthCheckWithAFailingCheckIsAnsweredNotOkNamingIt() throws Exception {
+    docker.answer("version", 1, "", "Cannot connect to the Docker daemon");
+    ackWith(2, 0);
+    start("t", 10_000);
+    host.await(Hello.class);
+    awaitTrue(() -> runner.sessionFacts().connected());
+
+    host.send(new HealthCheck(null, "registry.example/qits/build-images/ci-base:1"));
+    HealthChecked answer = host.await(HealthChecked.class);
+
+    assertFalse(answer.ok());
+    assertEquals(null, answer.requestId());
+    assertTrue(answer.detail().startsWith("docker: docker did not answer"), answer.detail());
+    assertEquals(7, answer.checks().size());
+    assertEquals(
+        "registry.example/qits/build-images/ci-base:1",
+        answer.checks().getLast().data().get("image"));
   }
 
   @Test

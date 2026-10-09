@@ -33,6 +33,16 @@
             <groupId>eu.wohlben.qits</groupId>
             <artifactId>qits-ci-runner-protocol</artifactId>
         </dependency>
+        <!-- qits-runner-javalib's toolkit, FOR THE HEALTH CHECKS ONLY (qits-896): HealthChecks, the
+             default checks and HealthContext. Everything else in it (RunnerRuntime, RunnerDocker,
+             LifecycleArgv, …) is qits-772's move and unused here; the native image keeps only what
+             is reachable. Its own deps are vertx-core and jboss-logging (both already here through
+             quarkus-vertx/quarkus-arc, versions managed by the Quarkus BOM) and
+             qits-containers-driver. -->
+        <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-runner-toolkit</artifactId>
+        </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-arc</artifactId>

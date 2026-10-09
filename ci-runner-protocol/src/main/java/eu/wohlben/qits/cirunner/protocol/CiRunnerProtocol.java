@@ -1,5 +1,7 @@
 package eu.wohlben.qits.cirunner.protocol;
 
+import eu.wohlben.qits.runner.protocol.health.HealthWire;
+
 /**
  * The single source of truth for the runner control-socket wire contract's tags and field names.
  *
@@ -22,6 +24,7 @@ package eu.wohlben.qits.cirunner.protocol;
  *   Upgrade → (drain) … Retire              (self-update; see Upgrade)
  *   Retire{kind: DELETED}                    (the runner was deleted; it decommissions itself)
  *   Quarantined … Reinstated                 (host stops giving work, then resumes; see Quarantined)
+ *   HealthCheck → HealthChecked              (the node's named checks, on demand; see HealthCheck)
  * </pre>
  *
  * with {@link Heartbeat} underneath from connect to close.
@@ -90,6 +93,10 @@ public final class CiRunnerProtocol {
     // qits-ci -> runner, quarantine. Additive: see Quarantined and Reinstated.
     public static final String QUARANTINED = "quarantined";
     public static final String REINSTATED = "reinstated";
+    // qits-ci -> runner -> qits-ci, the node health check. Additive: see HealthCheck. The values
+    // are qits-runner-protocol's HealthWire.Type, which every runner kind shares.
+    public static final String HEALTH_CHECK = HealthWire.Type.HEALTH_CHECK;
+    public static final String HEALTH_CHECKED = HealthWire.Type.HEALTH_CHECKED;
 
     private Type() {}
   }
@@ -132,6 +139,10 @@ public final class CiRunnerProtocol {
     // Quarantined and Reinstated.
     public static final String SINCE = "since";
     public static final String BY = "by";
+
+    // HealthCheck and HealthChecked — HealthWire's names, plus CI's own optional image (IMAGE).
+    public static final String REQUEST_ID = HealthWire.Field.REQUEST_ID;
+    public static final String CHECKS = HealthWire.Field.CHECKS;
 
     // Capabilities
     public static final String DOCKER = "docker";

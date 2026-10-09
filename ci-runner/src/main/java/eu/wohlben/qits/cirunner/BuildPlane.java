@@ -438,6 +438,91 @@ public final class BuildPlane {
         .ifPresent(failure -> LOG.warnf("ci-runner could not refresh its builder: %s", failure));
   }
 
+  /** Whether docker has the object a read-only look asked about. */
+  public enum Presence {
+    /** docker said there is no such object. */
+    ABSENT,
+    /** It exists — for the builder: under this runner's stamp label, so it is this runner's. */
+    PRESENT,
+    /** The builder's name is taken by a container without the stamp label: somebody else's. */
+    FOREIGN,
+    /** docker did not answer (or answered something else); {@code detail} says what. */
+    UNKNOWN
+  }
+
+  /**
+   * The builder container as docker sees it now.
+   *
+   * @param stamp the stamp label it carries; null unless {@link Presence#PRESENT}
+   * @param status docker's {@code .State.Status}; null when absent or unknown
+   * @param detail docker's words when {@link Presence#UNKNOWN}; else null
+   */
+  public record Builder(Presence presence, String stamp, String status, String detail) {}
+
+  /**
+   * The runner network as docker sees it now.
+   *
+   * @param driver its driver ({@code bridge}); null unless {@link Presence#PRESENT}
+   * @param detail docker's words when {@link Presence#UNKNOWN}; else null
+   */
+  public record Network(Presence presence, String driver, String detail) {}
+
+  /**
+   * The builder container's presence, stamp and state — <b>read-only</b>, for the {@code buildkit}
+   * and {@code network} health checks: one {@code docker inspect}, never a create, start or pull,
+   * and deliberately not synchronized, so a health check never queues behind an {@link #ensure}
+   * that is pulling the builder image.
+   */
+  public Builder builder() {
+    Docker.Result inspected = docker.run(inspectStamp());
+    if (!inspected.ok()) {
+      return absent(inspected)
+          ? new Builder(Presence.ABSENT, null, null, null)
+          : new Builder(Presence.UNKNOWN, null, null, inspected.detail());
+    }
+    String[] answer = inspected.stdout().strip().split("\\|", 2);
+    String stamp = answer[0];
+    String status = answer.length > 1 ? answer[1] : "";
+    if (stamp.isEmpty() || stamp.equals("<no value>")) {
+      return new Builder(Presence.FOREIGN, null, status, null);
+    }
+    return new Builder(Presence.PRESENT, stamp, status, null);
+  }
+
+  /** {@link #NETWORK}'s presence and driver — read-only, one {@code docker network inspect}. */
+  public Network network() {
+    Docker.Result inspected =
+        docker.run(
+            List.of(dockerBinary, "network", "inspect", "--format", "{{.Driver}}", NETWORK));
+    if (!inspected.ok()) {
+      return absent(inspected)
+          ? new Network(Presence.ABSENT, null, null)
+          : new Network(Presence.UNKNOWN, null, inspected.detail());
+    }
+    String driver = inspected.stdout().strip();
+    return new Network(Presence.PRESENT, driver.isEmpty() ? null : driver, null);
+  }
+
+  /** The stamp {@link #ensure} would start the builder under now — what "current" means. */
+  public String configuredStamp() {
+    return stamp();
+  }
+
+  /** The builder image this instance starts. */
+  public String image() {
+    return image;
+  }
+
+  /** docker's own words for "there is no such object", as opposed to a docker that did not answer. */
+  private static boolean absent(Docker.Result result) {
+    String detail = result.detail().toLowerCase(java.util.Locale.ROOT);
+    return !result.timedOut()
+        && (detail.contains("no such object")
+            || detail.contains("no such container")
+            || detail.contains("no such network")
+            || detail.contains("not found"));
+  }
+
   private List<String> inspectStamp() {
     return List.of(
         dockerBinary,

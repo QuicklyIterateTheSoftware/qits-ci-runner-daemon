@@ -23,4 +23,6 @@ public sealed interface CiRunnerMessage
         Upgrade,
         Retire,
         Quarantined,
-        Reinstated {}
+        Reinstated,
+        HealthCheck,
+        HealthChecked {}

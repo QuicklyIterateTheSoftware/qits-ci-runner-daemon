@@ -17,7 +17,10 @@
     <artifactId>qits-ci-runner-protocol</artifactId>
 
     <!-- The runner control-socket wire contract: plain records + the shared type/field name
-         constants, framework-free and dependency-free. Both qits-ci (the host, serializing with
+         constants, framework-free, and dependency-free but for ONE jar: qits-runner-protocol, for
+         the health report every runner kind shares (CheckResult, HealthReport, HealthWire). That jar
+         is itself plain records with no dependency at all (its own enforcer bans any), so a peer
+         linking this one still links no framework and no JSON library. Both qits-ci (the host, serializing with
          Jackson) and the native runner (`ci-runner`, mapping via Vert.x JsonObject) depend on it so
          neither owns the protocol. No JSON library here on purpose — serialization lives on each
          side against whatever it already carries.
@@ -32,6 +35,10 @@
          are the same release. -->
 
     <dependencies>
+        <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-runner-protocol</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

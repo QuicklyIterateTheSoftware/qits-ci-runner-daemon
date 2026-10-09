@@ -160,6 +160,47 @@ runner. The log line, and the runner's own idea of its status, are for the perso
 An admin lifts a quarantine from the Runners page in the CI UI — greenlighting it directly, or
 triggering an immediate health check rather than waiting for the hourly one.
 
+### The node health check
+
+Beside the pseudo-build, the CI can ask the runner itself what its node looks like: a `healthCheck`
+frame, answered by `healthChecked` with every named check's outcome — the facts an operator would
+otherwise read with `docker` on the node. It is a diagnosis and never gates: quarantine follows the
+pseudo-build alone. The checks run off the socket's thread, in this order, each under its own
+deadline (three docker deadlines unless it names one), so a check that hangs or throws fails by
+itself and the rest are still reported:
+
+| Check | Data | Ok when |
+|---|---|---|
+| `docker` | `{serverVersion}` | `docker version` answers a server version |
+| `nodeInventory` | `{containers, volumes, runnerContainer}` | every listing and inspect of the runner's own labelled objects (`qits.ci.runner=<id>`, and its own container by `qits.ci.runner.process=<id>`) was answered |
+| `session` | `{connected, connectedSince, slots, held}` | the runner is connected (admitted by an `Ack`) |
+| `buildkit` | `{container, presence, state, stamp, configuredStamp, address, image, stateVolume}` | `qits-ci-runner-buildkitd` is running under the stamp the next build would start it with — or was never created, because no build on this node has needed it yet |
+| `network` | `{network, presence, driver, builder}` | the `qits-ci-runner` bridge exists — or is missing while no builder exists either ("not needed yet") |
+| `idRange` | `{idRange, fullIdRange, narrow}` | the user namespace maps the full uid/gid space; fails with the same words as the boot-time warning (a rootless docker or unprivileged LXC host maps too few; qits-ci then hands it no build step), unknown is ok |
+| `stepImage` | `{image, requested, present, pulled}` | the step image is on the node, or `docker pull` fetches it within 180 s |
+
+The first three are qits-runner-javalib's defaults (`qits-runner-toolkit`, `HealthChecks`), the rest
+CI's own. Every check is read-only but one: `stepImage` pulls an image that is not here — what the
+next run would do anyway — and records it for housekeeping like a launch's. It pulls under this
+host's docker login, never a run's (a health frame carries no credential), so on a registry that
+refuses an anonymous pull only an image already present passes. The image is the request's `image`
+when it names one (the host sends it resolved, with its registry, as it resolves a step's), else
+`qits/build-images/ci-base:latest` on `registry.<domain>` when the CI url is `https://ci.<domain>`,
+else that bare name, which only a local copy answers.
+
+`nodeInventory` lists the step containers (each with the run id in its `qits.ci.runner.run` label;
+the inventory's numeric `rowId` reads null for these UUIDs) and the runner's own container. Its
+`volumes` are the volumes labelled `qits.ci.runner=<id>`, and this runner labels none: the state
+volume and the builder's volume are found by name, the builder by `buildkit` above.
+
+**Adding a check** is a class in `ci-runner`: a `@Singleton` implementing the toolkit's
+`RunnerHealthCheck`, with no constructor argument, reading what it needs from the context
+(`ctx.docker()`, `ctx.session()`, `ctx.lookup(BuildPlane.class)`, `Capabilities`, `StepImages`,
+`CiHealth.StepImageTarget`). `Main` collects every such bean with `@Inject @All
+List<RunnerHealthCheck>` — resolved by ArC at build time, so the native image needs no reflection —
+and `CiHealth.ordered` fixes the wire order: the four above in that order, any other after them by
+name.
+
 ### Rotating the registration, or replacing a runner
 
 In the CI UI, **Replace registration token** on the runner, then paste the **new line** into a shell
@@ -340,13 +381,14 @@ runner on the platform host (see above), so nothing here is exercised until that
 
 | Path | What |
 |---|---|
-| `ci-runner-protocol/` | The runner control-socket wire contract: message records and a codec over a plain `Map`, plus `CiRunnerBinary` naming the runner version (the image tag) released beside it. Depends on nothing. Published as `eu.wohlben.qits:qits-ci-runner-protocol`; qits-ci-service depends on it. |
+| `ci-runner-protocol/` | The runner control-socket wire contract: message records and a codec over a plain `Map`, plus `CiRunnerBinary` naming the runner version (the image tag) released beside it. Depends on nothing but `qits-runner-protocol` (itself dependency-free), for the shared health report. Published as `eu.wohlben.qits:qits-ci-runner-protocol`; qits-ci-service depends on it. |
 | `ci-runner/` | The binary. A Quarkus command-mode app — no web stack, it dials out and never listens — compiled to a fully static musl native image, `qits-ci-runner`. |
 | `docker/` | `Dockerfile` (the native build; its default target `image` is the runner image, `binary` exports the bare file) and `Dockerfile.musl-builder` (the toolchain; a copy of qits-ci-daemon's). |
 | `scripts/test-install-contract.sh` | Runs the install script offline against a stub docker and asserts its contract. |
 | `scripts/fixtures/runner-install.sh` | The reference implementation of the install contract. qits-ci-service's template (`service/src/main/resources/runner-install.sh.tmpl`) is written to match it exactly. |
 
-Inside `ci-runner/`, `Main` is the only CDI bean. It resolves configuration and news up plain classes:
+Inside `ci-runner/`, `Main` is the only CDI bean besides the node health checks (`BuildkitCheck`,
+`NetworkCheck`, `IdRangeCheck`, `StepImageCheck`, collected into `CiHealth`). It resolves configuration and news up plain classes:
 `RunnerMain` (the flow), `Registration` and `Bearer` (identity), `ControlSocket` (the connection),
 `Reservations` (slot arithmetic), `Launcher`/`RunnerArgv` (spec → `docker run`), `Reaper`,
 `BootSweep` and `LogTail` (removal, and a removed container's last output), `Telemetry` and
@@ -369,12 +411,19 @@ container this is, what it was started with, and its successor). `HealthCommand`
     Retire{reason, kind: DELETED}            the runner was deleted: decommission (see "Deleting a runner")
     Quarantined{reason, since}               the CI stops giving this runner work (see "Quarantine and health checks")
     Reinstated{by}                           the quarantine is lifted
+    HealthCheck{requestId?, image?} → HealthChecked{ok, detail, requestId?, checks?[{name, ok, detail, data}]}
+                                             the node's named checks, on demand (see "The node health check")
     Heartbeat                                every 10 s
 
 **`Upgrade` and `Retire` are frozen**, with `Hello.runnerVersion`: they are how a runner of any older
 version is told to update, so their wire shape never changes (see `Upgrade`'s javadoc). A runner too
 old to know them drops them as frames of an unknown type and stays connected — the host keeps it
 draining, and a person re-pastes the install line (see "Updating").
+
+**The health frames are additive**, and their shape is qits-runner-javalib's `HealthWire`, shared
+with every runner kind: `type` first, `requestId` and `checks` left off when absent. `image` is CI's
+own, written last and only when set. A runner older than them drops a `healthCheck` as an unknown
+type and never answers, so the host times its request out.
 
 **`Retire.kind` is an added field.** It is only on the wire as `DELETED`; absent, or a value this
 binary does not know, reads as a self-update's retirement, which never removes a state volume. A

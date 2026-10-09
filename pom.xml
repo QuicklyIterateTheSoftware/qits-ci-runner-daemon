@@ -36,6 +36,11 @@
 
         <compiler-plugin.version>3.15.0</compiler-plugin.version>
         <surefire-plugin.version>3.5.4</surefire-plugin.version>
+        <!-- qits-runner-javalib, the ONE version both of its jars are taken at: qits-runner-protocol
+             (the shared health report wire, HealthWire) in ci-runner-protocol, and
+             qits-runner-toolkit (the health-check machinery, and nothing else yet — moving the
+             runner onto RunnerRuntime is qits-772) in ci-runner. -->
+        <qits.runner.version>2026.1009.999999</qits.runner.version>
     </properties>
 
     <dependencyManagement>
@@ -58,6 +63,16 @@
                 <groupId>eu.wohlben.qits</groupId>
                 <artifactId>qits-ci-runner-protocol</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>eu.wohlben.qits</groupId>
+                <artifactId>qits-runner-protocol</artifactId>
+                <version>${qits.runner.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>eu.wohlben.qits</groupId>
+                <artifactId>qits-runner-toolkit</artifactId>
+                <version>${qits.runner.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

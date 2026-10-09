@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import eu.wohlben.qits.runner.protocol.health.CheckResult;
 import java.util.AbstractMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -110,7 +111,12 @@ class CiRunnerCodecTest {
             Retire.deleted("deleted by admin"),
             new Quarantined("3 runner-caused failures in a row", "2026-09-28T12:00:00Z"),
             new Reinstated("admin"),
-            new Reinstated("healthcheck"));
+            new Reinstated("healthcheck"),
+            new HealthCheck("req-1"),
+            new HealthCheck(null),
+            new HealthCheck("req-1", "registry.example/qits/build-images/ci-base:latest"),
+            new HealthChecked(true, "all 1 checks passed", "req-1", List.of(dockerCheck())),
+            new HealthChecked(false, "docker: no", null, List.of()));
     for (CiRunnerMessage message : all) {
       assertEquals(message, roundTrip(message), () -> "did not round-trip: " + message);
     }
@@ -120,7 +126,87 @@ class CiRunnerCodecTest {
   void everyPermittedTypeIsCoveredByTheRoundTrip() {
     // A new record added to the sealed set without a case above would still compile the codec's
     // switch only if it had an arm; this pins that the test list grows with it.
-    assertEquals(18, CiRunnerMessage.class.getPermittedSubclasses().length);
+    assertEquals(20, CiRunnerMessage.class.getPermittedSubclasses().length);
+  }
+
+  private static CheckResult dockerCheck() {
+    Map<String, Object> data = new LinkedHashMap<>();
+    data.put("serverVersion", "27.1.1");
+    data.put("absent", null);
+    return new CheckResult("docker", true, "docker 27.1.1", data);
+  }
+
+  /**
+   * The health frames are qits-runner-protocol's {@code HealthWire} shape, which every runner kind
+   * and qits-ci's other runner host already read: pinned here by literal, key order included, so
+   * delegating cannot quietly move a key. CI's own {@code image} rides last and only when set.
+   */
+  @Test
+  void theHealthFramesHaveTheSharedWireShape() {
+    Map<String, Object> check = new LinkedHashMap<>();
+    check.put("type", "healthCheck");
+    check.put("requestId", "req-1");
+    assertEquals(check, CiRunnerCodec.encode(new HealthCheck("req-1")));
+    assertEquals(
+        List.of("type", "requestId", "image"),
+        List.copyOf(CiRunnerCodec.encode(new HealthCheck("req-1", "img:1")).keySet()));
+
+    Map<String, Object> checked = new LinkedHashMap<>();
+    checked.put("type", "healthChecked");
+    checked.put("ok", true);
+    checked.put("detail", "all 1 checks passed");
+    checked.put("requestId", "req-1");
+    Map<String, Object> one = new LinkedHashMap<>();
+    one.put("name", "docker");
+    one.put("ok", true);
+    one.put("detail", "docker 27.1.1");
+    one.put("data", dockerCheck().data());
+    checked.put("checks", List.of(one));
+    Map<String, Object> encoded =
+        CiRunnerCodec.encode(
+            new HealthChecked(true, "all 1 checks passed", "req-1", List.of(dockerCheck())));
+    assertEquals(checked, encoded);
+    assertEquals(List.copyOf(checked.keySet()), List.copyOf(encoded.keySet()));
+    assertEquals(CiRunnerProtocol.Type.HEALTH_CHECK, "healthCheck");
+    assertEquals(CiRunnerProtocol.Type.HEALTH_CHECKED, "healthChecked");
+  }
+
+  /** A request without an id is the frame without the key, and reads back as null. */
+  @Test
+  void aHealthCheckWithoutARequestIdLeavesTheKeyOffAndDecodesToNull() {
+    assertEquals(Map.of("type", "healthCheck"), CiRunnerCodec.encode(new HealthCheck(null)));
+    assertEquals(new HealthCheck(null, null), CiRunnerCodec.decode(Map.of("type", "healthCheck")));
+    assertFalse(
+        CiRunnerCodec.encode(new HealthChecked(true, "ok", null, List.of()))
+            .containsKey(CiRunnerProtocol.Field.REQUEST_ID));
+  }
+
+  /**
+   * A {@code healthChecked} without {@code checks} — an answer from before the named checks, the
+   * original {@code {ok, detail}} — decodes to an empty list, and an empty list is written as no key.
+   */
+  @Test
+  void aHealthCheckedWithoutChecksDecodesToAnEmptyListAndEncodesWithoutTheKey() {
+    HealthChecked decoded =
+        (HealthChecked)
+            CiRunnerCodec.decode(Map.of("type", "healthChecked", "ok", false, "detail", "old"));
+    assertEquals(new HealthChecked(false, "old", null, List.of()), decoded);
+    assertEquals(List.of(), decoded.checks());
+    assertFalse(
+        CiRunnerCodec.encode(new HealthChecked(false, "old", "r", null))
+            .containsKey(CiRunnerProtocol.Field.CHECKS));
+  }
+
+  @Test
+  void aHealthCheckedWhoseChecksAreNotAListIsMalformed() {
+    assertEquals(
+        CiRunnerDecodeException.Reason.MALFORMED,
+        assertThrows(
+                CiRunnerDecodeException.class,
+                () ->
+                    CiRunnerCodec.decode(
+                        Map.of("type", "healthChecked", "ok", true, "detail", "x", "checks", "no")))
+            .reason());
   }
 
   @Test
