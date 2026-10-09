@@ -39,14 +39,10 @@ release-request:
   - image: qits/build-images/maven-base:latest
     timeout-seconds: 1800
     script: |
-      # THE ADDRESSES ARE CODE (qits-731): hosted Maven on registry.qits.<domain> — where
-      # qits-runner-protocol and qits-runner-toolkit live — and Central through mirror.qits.<domain>.
-      # `wohlben.eu` covers a qits-ci too old to inject $QITS_DOMAIN.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
-      export QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central"
-      export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
-      ./mvnw -B -ntp -s .qits-maven-settings.xml verify \
-        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL"
+      # qits-ci hands every step $QITS_MAVEN_REPOSITORY_URL (hosted Maven, where qits-runner-protocol
+      # and qits-runner-toolkit live) and $QITS_MAVEN_CENTRAL_URL (Central through qits-mirror), both
+      # derived in its code from the domain (qits-896); .qits-maven-settings.xml reads them as they are.
+      ./mvnw -B -ntp -s .qits-maven-settings.xml verify
 
   - image: qits/build-images/ci-base:latest
     docker: true
@@ -204,16 +200,11 @@ release:
     timeout-seconds: 1800
     script: |
       # NO LONGER A DEPLOY: the CLI publishes this coordinate from the postlude, off the jar this
-      # step leaves in target/. This step only has to build it — and, since ci-runner-protocol
-      # depends on qits-runner-protocol, which only the platform's own repository has, both
-      # invocations resolve through it. THE ADDRESSES ARE CODE (qits-731). `wohlben.eu` covers a
-      # qits-ci too old to inject $QITS_DOMAIN.
-      qits_domain=${QITS_DOMAIN:-wohlben.eu}
-      export QITS_MAVEN_REPOSITORY_URL="https://registry.qits.$qits_domain/artifacts/maven/maven"
-      ./mvnw -B -ntp -s .qits-maven-settings.xml -pl ci-runner-protocol -am package -DskipTests \
-        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL"
-      QITS_MAVEN_CENTRAL_URL="https://mirror.qits.$qits_domain/mirror/maven/central" \
+      # step leaves in target/. This step only has to build it. ci-runner-protocol depends on
+      # qits-runner-protocol, which only the platform's own repository has; qits-ci hands the step
+      # its address as $QITS_MAVEN_REPOSITORY_URL, and Central's as $QITS_MAVEN_CENTRAL_URL
+      # (qits-896), which .qits-maven-settings.xml reads.
+      ./mvnw -B -ntp -s .qits-maven-settings.xml -pl ci-runner-protocol -am package -DskipTests
       ./mvnw -B -ntp -s .qits-maven-settings.xml -pl ci-runner-protocol -DskipTests \
-        -Dqits.maven.repository.url="$QITS_MAVEN_REPOSITORY_URL" \
         org.cyclonedx:cyclonedx-maven-plugin:2.9.1:makeBom \
         -DoutputFormat=json -DoutputName=sbom -DschemaVersion=1.6
