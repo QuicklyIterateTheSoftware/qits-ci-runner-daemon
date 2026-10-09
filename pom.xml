@@ -40,7 +40,7 @@
              (the shared health report wire, HealthWire) in ci-runner-protocol, and
              qits-runner-toolkit (the health-check machinery, and nothing else yet — moving the
              runner onto RunnerRuntime is qits-772) in ci-runner. -->
-        <qits.runner.version>2026.1009.172202</qits.runner.version>
+        <qits.runner.version>2026.1009.174842</qits.runner.version>
 
         <!-- Where the platform publishes it. Overridden by CI (-Dqits.maven.repository.url), derived
              from QITS_DOMAIN; the default below is the public host. -->
