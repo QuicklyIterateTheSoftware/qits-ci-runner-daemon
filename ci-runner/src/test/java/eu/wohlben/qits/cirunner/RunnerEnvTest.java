@@ -72,6 +72,51 @@ class RunnerEnvTest {
     assertEquals(120, env.dockerTimeoutSeconds());
     assertEquals("moby/buildkit:v0.33.0", env.buildkitImage());
     assertEquals(BuildPlane.STATE_VOLUME, env.buildkitStateVolume());
+    assertEquals(BuildPlane.MAX_PARALLELISM, env.buildkitMaxParallelism());
+  }
+
+  @Test
+  void theBuildkitMaxParallelismDefaultsToOneIsOverridableAndRefusesBadValues() throws Exception {
+    RunnerEnv unset =
+        RunnerEnv.parse(
+            "https://ci.example", "r1", null, null, null, null, null, null, null, null, null,
+            null, null, null);
+    assertEquals(1, unset.buildkitMaxParallelism());
+    assertEquals(BuildPlane.MAX_PARALLELISM, unset.buildkitMaxParallelism());
+
+    RunnerEnv set =
+        RunnerEnv.parse(
+            "https://ci.example", "r1", null, null, null, null, null, null, null, null, null,
+            null, null, "3");
+    assertEquals(3, set.buildkitMaxParallelism());
+
+    assertTrue(
+        assertThrows(
+                RunnerEnv.Invalid.class,
+                () ->
+                    RunnerEnv.parse(
+                        "https://ci.example", "r1", null, null, null, null, null, null, null,
+                        null, null, null, null, "0"))
+            .getMessage()
+            .startsWith("QITS_CI_RUNNER_BUILDKIT_MAX_PARALLELISM"));
+    assertTrue(
+        assertThrows(
+                RunnerEnv.Invalid.class,
+                () ->
+                    RunnerEnv.parse(
+                        "https://ci.example", "r1", null, null, null, null, null, null, null,
+                        null, null, null, null, "-1"))
+            .getMessage()
+            .startsWith("QITS_CI_RUNNER_BUILDKIT_MAX_PARALLELISM"));
+    assertTrue(
+        assertThrows(
+                RunnerEnv.Invalid.class,
+                () ->
+                    RunnerEnv.parse(
+                        "https://ci.example", "r1", null, null, null, null, null, null, null,
+                        null, null, null, null, "many"))
+            .getMessage()
+            .startsWith("QITS_CI_RUNNER_BUILDKIT_MAX_PARALLELISM"));
   }
 
   @Test

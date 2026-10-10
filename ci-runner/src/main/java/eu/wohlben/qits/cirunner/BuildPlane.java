@@ -79,6 +79,15 @@ public final class BuildPlane {
    */
   public static final String STATE_VOLUME = "qits-buildkitd-state";
 
+  /**
+   * How many build operations this builder may run at once when the operator names none — {@code
+   * QITS_CI_RUNNER_BUILDKIT_MAX_PARALLELISM}'s default (see {@link
+   * RunnerEnv#BUILDKIT_MAX_PARALLELISM}). One: several GraalVM native-image builds running at the
+   * same time in one builder are each memory-hungry enough to push the host into the OOM killer,
+   * which is worse than the second build simply queuing behind the first.
+   */
+  public static final int MAX_PARALLELISM = 1;
+
   /** What a building step is handed as {@code BUILDKIT_HOST} when its spec left the key absent. */
   public static final String ADDRESS = "tcp://" + CONTAINER + ":1234";
 
@@ -131,6 +140,7 @@ public final class BuildPlane {
   private final String toml;
   private final Optional<String> caBundlePath;
   private final String stateVolume;
+  private final int maxParallelism;
 
   /** A builder with no registry configuration — every registry https and publicly resolvable. */
   public BuildPlane(Docker docker, String dockerBinary, String image) {
@@ -174,10 +184,8 @@ public final class BuildPlane {
   }
 
   /**
-   * The full constructor. {@code stateVolume} is {@code QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME}
-   * resolved by {@link RunnerEnv} — a changed value is stamp material (see {@link #stamp}), so
-   * pointing a runner at a different volume recreates the builder against it rather than adopting
-   * whatever the old volume's builder left running.
+   * The same, without {@code maxParallelism}: defaults it to {@link #MAX_PARALLELISM}, unchanged
+   * from before the builder's concurrency became operator configurable.
    */
   public BuildPlane(
       Docker docker,
@@ -187,15 +195,38 @@ public final class BuildPlane {
       List<String> registryMirrors,
       List<String> caBundleCandidates,
       String stateVolume) {
+    this(
+        docker, dockerBinary, image, httpRegistries, registryMirrors, caBundleCandidates,
+        stateVolume, MAX_PARALLELISM);
+  }
+
+  /**
+   * The full constructor. {@code stateVolume} is {@code QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME}
+   * resolved by {@link RunnerEnv} — a changed value is stamp material (see {@link #stamp}), so
+   * pointing a runner at a different volume recreates the builder against it rather than adopting
+   * whatever the old volume's builder left running. {@code maxParallelism} is {@code
+   * QITS_CI_RUNNER_BUILDKIT_MAX_PARALLELISM} resolved the same way (see {@link
+   * RunnerEnv#BUILDKIT_MAX_PARALLELISM}) — also stamp material, since it is rendered into the toml.
+   */
+  public BuildPlane(
+      Docker docker,
+      String dockerBinary,
+      String image,
+      List<String> httpRegistries,
+      List<String> registryMirrors,
+      List<String> caBundleCandidates,
+      String stateVolume,
+      int maxParallelism) {
     this.docker = docker;
     this.dockerBinary = dockerBinary;
     this.image = image;
     this.httpRegistries = List.copyOf(httpRegistries);
     this.registryMirrors = List.copyOf(registryMirrors);
     this.caBundleCandidates = List.copyOf(caBundleCandidates);
-    this.toml = renderToml(httpRegistries, registryMirrors);
+    this.toml = renderToml(httpRegistries, registryMirrors, maxParallelism);
     this.caBundlePath = probeCaBundle(caBundleCandidates);
     this.stateVolume = stateVolume;
+    this.maxParallelism = maxParallelism;
   }
 
   /**
@@ -227,7 +258,8 @@ public final class BuildPlane {
     }
     ackMirrors.forEach((from, to) -> merged.add(from + "=" + to));
     return new BuildPlane(
-        docker, dockerBinary, image, httpRegistries, merged, caBundleCandidates, stateVolume);
+        docker, dockerBinary, image, httpRegistries, merged, caBundleCandidates, stateVolume,
+        maxParallelism);
   }
 
   /**
@@ -254,9 +286,9 @@ public final class BuildPlane {
   }
 
   /**
-   * The worker table: {@code networkMode} (see {@link #renderToml}) and the build cache's garbage
-   * collection — the only thing that bounds {@link #STATE_VOLUME}, which otherwise grows with every
-   * build the node ever ran.
+   * The worker table: {@code networkMode} (see {@link #renderToml}), {@code max-parallelism} (see
+   * this constant's own paragraph below), and the build cache's garbage collection — the only thing
+   * that bounds {@link #STATE_VOLUME}, which otherwise grows with every build the node ever ran.
    *
    * <p><b>The keys are buildkit v0.33.0's</b> ({@code cmd/buildkitd/config/config.go}: {@code
    * GCConfig.GC} is {@code gc}, {@code GCPolicy} is {@code gcpolicy}, and a policy's fields are
@@ -283,12 +315,22 @@ public final class BuildPlane {
    * </ol>
    *
    * Sizes are {@code go-units} {@code RAMInBytes}, so {@code 20GB} is 20 GiB.
+   *
+   * <p><b>{@code max-parallelism} bounds the worker's concurrently running operations</b> — every
+   * {@code RUN}, pull and copy of every build, so it serialises builds at their steps. Several
+   * GraalVM native-image builds running at once in one builder are each memory-hungry enough on their
+   * own to push the host into the OOM killer — and a step's own process runs at {@code
+   * oom-score-adj} 1000, so the kernel kills the step's {@code buildctl} first, not buildkitd. A
+   * worker bounded to {@link RunnerEnv#BUILDKIT_MAX_PARALLELISM} operations queues the second {@code RUN}
+   * behind the first instead, which is a slower build, never a killed one. The placeholder is
+   * formatted in by {@link #renderToml}.
    */
   static final String WORKER_TOML =
       """
       [worker.oci]
         networkMode = "host"
         gc = true
+        max-parallelism = %d
       [[worker.oci.gcpolicy]]
         keepDuration = "72h"
       [[worker.oci.gcpolicy]]
@@ -311,8 +353,13 @@ public final class BuildPlane {
    * a TOML file declaring the same table twice — which buildkitd refuses to start on. Here a host
    * that is both a mirror source and plain-HTTP gets both keys in one table. Order is the order the
    * operator wrote, so the rendering (and with it the stamp) is stable.
+   *
+   * <p>{@code maxParallelism} is {@code QITS_CI_RUNNER_BUILDKIT_MAX_PARALLELISM}, formatted into
+   * {@link #WORKER_TOML}'s {@code max-parallelism} key — see that constant's javadoc for why an
+   * unbounded worker is the wrong default for a node running concurrent native-image builds.
    */
-  static String renderToml(List<String> httpRegistries, List<String> registryMirrors) {
+  static String renderToml(
+      List<String> httpRegistries, List<String> registryMirrors, int maxParallelism) {
     Map<String, List<String>> mirrors = new LinkedHashMap<>();
     Set<String> http = new LinkedHashSet<>(httpRegistries);
     Set<String> hosts = new LinkedHashSet<>();
@@ -324,7 +371,7 @@ public final class BuildPlane {
     }
     hosts.addAll(http);
     StringBuilder out =
-        new StringBuilder(WORKER_TOML)
+        new StringBuilder(WORKER_TOML.formatted(maxParallelism))
             .append("[dns]\n  nameservers = [\"").append(EXEC_NAMESERVER).append("\"]\n");
     for (String host : hosts) {
       out.append("[registry.\"").append(host).append("\"]\n");

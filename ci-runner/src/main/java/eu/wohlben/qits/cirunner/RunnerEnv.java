@@ -27,7 +27,8 @@ public record RunnerEnv(
     List<String> buildkitRegistryMirrors,
     long rolloverTimeoutSeconds,
     boolean selfUpdate,
-    String buildkitStateVolume) {
+    String buildkitStateVolume,
+    int buildkitMaxParallelism) {
 
   /**
    * {@code QITS_CI_RUNNER_SELF_UPDATE}: whether an {@code Upgrade} makes this runner roll itself over
@@ -46,6 +47,16 @@ public record RunnerEnv(
    * where both run, which is the point of the default.
    */
   public static final String BUILDKIT_STATE_VOLUME = "QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME";
+
+  /**
+   * {@code QITS_CI_RUNNER_BUILDKIT_MAX_PARALLELISM}: how many build operations {@link BuildPlane}'s
+   * builder runs at once. Several GraalVM native-image builds running concurrently in one builder are each
+   * memory-hungry enough on their own to push the host into the OOM killer — which, because a step's
+   * own process runs at {@code oom-score-adj} 1000, kills the step's {@code buildctl} before it
+   * touches buildkitd itself. Defaults to {@link BuildPlane#MAX_PARALLELISM}, which queues the second
+   * {@code RUN} behind the first instead.
+   */
+  public static final String BUILDKIT_MAX_PARALLELISM = "QITS_CI_RUNNER_BUILDKIT_MAX_PARALLELISM";
 
   /**
    * A registry as buildkitd.toml names it: {@code host[:port]}. Checked here because the value is
@@ -188,6 +199,29 @@ public record RunnerEnv(
       String selfUpdate,
       String buildkitStateVolume)
       throws Invalid {
+    return parse(
+        url, runnerId, registrationToken, stateDir, slots, dockerBinary, dockerTimeout,
+        buildkitImage, buildkitHttpRegistries, buildkitRegistryMirrors, rolloverTimeout,
+        selfUpdate, buildkitStateVolume, null);
+  }
+
+  /** The same, with {@link #BUILDKIT_MAX_PARALLELISM}. */
+  public static RunnerEnv parse(
+      String url,
+      String runnerId,
+      String registrationToken,
+      String stateDir,
+      String slots,
+      String dockerBinary,
+      String dockerTimeout,
+      String buildkitImage,
+      String buildkitHttpRegistries,
+      String buildkitRegistryMirrors,
+      String rolloverTimeout,
+      String selfUpdate,
+      String buildkitStateVolume,
+      String buildkitMaxParallelism)
+      throws Invalid {
     if (blank(url)) {
       throw new Invalid("QITS_CI_RUNNER_URL is not set");
     }
@@ -218,7 +252,11 @@ public record RunnerEnv(
             stripSeconds(rolloverTimeout),
             DEFAULT_ROLLOVER_TIMEOUT_SECONDS),
         bool(SELF_UPDATE, selfUpdate, true),
-        blank(buildkitStateVolume) ? BuildPlane.STATE_VOLUME : buildkitStateVolume.trim());
+        blank(buildkitStateVolume) ? BuildPlane.STATE_VOLUME : buildkitStateVolume.trim(),
+        positive(
+            "QITS_CI_RUNNER_BUILDKIT_MAX_PARALLELISM",
+            buildkitMaxParallelism,
+            BuildPlane.MAX_PARALLELISM));
   }
 
   private static boolean bool(String variable, String value, boolean fallback) throws Invalid {

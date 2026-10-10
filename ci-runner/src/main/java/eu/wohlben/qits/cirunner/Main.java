@@ -152,6 +152,9 @@ public class Main {
     @ConfigProperty(name = "qits.ci.runner.buildkit-state-volume")
     Optional<String> buildkitStateVolume;
 
+    @ConfigProperty(name = "qits.ci.runner.buildkit-max-parallelism")
+    Optional<String> buildkitMaxParallelism;
+
     @ConfigProperty(name = "qits.ci.runner.heartbeat-interval-ms", defaultValue = "10000")
     long heartbeatMillis;
 
@@ -183,7 +186,8 @@ public class Main {
                 buildkitRegistryMirrors.orElse(null),
                 rolloverTimeout.orElse(null),
                 selfUpdate.orElse(null),
-                buildkitStateVolume.orElse(null));
+                buildkitStateVolume.orElse(null),
+                buildkitMaxParallelism.orElse(null));
         telemetryUrl = RunnerEnv.telemetryUrl(System.getenv(TELEMETRY_URL), env.url());
       } catch (RunnerEnv.Invalid invalid) {
         // The container's log is the only channel before anything is dialled, so this line is the whole
@@ -238,7 +242,8 @@ public class Main {
               env.buildkitHttpRegistries(),
               env.buildkitRegistryMirrors(),
               caBundleCandidates(self),
-              env.buildkitStateVolume());
+              env.buildkitStateVolume(),
+              env.buildkitMaxParallelism());
       // The record of step images lives beside client.json, so a successor inherits it.
       StepImages stepImages =
           new StepImages(

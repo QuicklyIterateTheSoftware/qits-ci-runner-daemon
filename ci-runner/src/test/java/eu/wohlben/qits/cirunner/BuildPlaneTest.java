@@ -157,6 +157,7 @@ class BuildPlaneTest {
         [worker.oci]
           networkMode = "host"
           gc = true
+          max-parallelism = 1
         [[worker.oci.gcpolicy]]
           keepDuration = "72h"
         [[worker.oci.gcpolicy]]
@@ -167,13 +168,34 @@ class BuildPlaneTest {
         [dns]
           nameservers = ["127.0.0.11"]
         """,
-        BuildPlane.renderToml(List.of(), List.of()));
+        BuildPlane.renderToml(List.of(), List.of(), 1));
+  }
+
+  @Test
+  void theConfiguredMaxParallelismIsTheOneWritten() {
+    assertEquals(
+        """
+        [worker.oci]
+          networkMode = "host"
+          gc = true
+          max-parallelism = 3
+        [[worker.oci.gcpolicy]]
+          keepDuration = "72h"
+        [[worker.oci.gcpolicy]]
+          maxUsedSpace = "20GB"
+        [[worker.oci.gcpolicy]]
+          all = true
+          maxUsedSpace = "20GB"
+        [dns]
+          nameservers = ["127.0.0.11"]
+        """,
+        BuildPlane.renderToml(List.of(), List.of(), 3));
   }
 
   @Test
   void mirrorsAndPlainHttpRegistriesRenderOneTablePerHost() {
     assertEquals(
-        BuildPlane.WORKER_TOML
+        BuildPlane.WORKER_TOML.formatted(1)
             + """
         [dns]
           nameservers = ["127.0.0.11"]
@@ -187,7 +209,7 @@ class BuildPlaneTest {
         [registry."dev-qits-platform-mirror:8080"]
           http = true
         """,
-        BuildPlane.renderToml(HTTP, MIRRORS));
+        BuildPlane.renderToml(HTTP, MIRRORS, 1));
   }
 
   @Test
@@ -198,7 +220,8 @@ class BuildPlaneTest {
     assertEquals(Optional.empty(), plane.ensure(null));
     List<String> run = fake.calls("run").getFirst();
     assertEquals(
-        "BUILDKITD_TOML=" + BuildPlane.renderToml(HTTP, MIRRORS), run.get(run.indexOf("-e") + 1));
+        "BUILDKITD_TOML=" + BuildPlane.renderToml(HTTP, MIRRORS, 1),
+        run.get(run.indexOf("-e") + 1));
     assertTrue(run.contains("qits.ci.runner.buildkitd=" + plane.stamp()));
   }
 
@@ -299,7 +322,7 @@ class BuildPlaneTest {
     BuildPlane rewritten = plane.withRegistryMirrors(ACK_MIRRORS);
 
     assertEquals(
-        BuildPlane.WORKER_TOML
+        BuildPlane.WORKER_TOML.formatted(1)
             + """
         [dns]
           nameservers = ["127.0.0.11"]
@@ -320,7 +343,7 @@ class BuildPlaneTest {
     BuildPlane rewritten = plane.withRegistryMirrors(ACK_MIRRORS);
 
     assertEquals(
-        BuildPlane.WORKER_TOML
+        BuildPlane.WORKER_TOML.formatted(1)
             + """
         [dns]
           nameservers = ["127.0.0.11"]
@@ -447,5 +470,70 @@ class BuildPlaneTest {
     assertEquals(Optional.empty(), sameAgain.ensure(null));
     assertEquals(0, fake.calls("rm").size());
     assertEquals(0, fake.calls("run").size());
+  }
+
+  @Test
+  void aConfiguredMaxParallelismIsWrittenIntoTheStartedBuildersToml() throws Exception {
+    FakeDocker fake =
+        new FakeDocker(dir)
+            .answer("network-inspect", 1, "", "network qits-ci-runner not found")
+            .answer("inspect", 1, "", "No such object")
+            .answer("image-inspect", 1, "", "No such image");
+    BuildPlane plane =
+        new BuildPlane(
+            fake.docker(10),
+            fake.binary,
+            "moby/buildkit:v0.33.0",
+            List.of(),
+            List.of(),
+            BuildPlane.HOST_CA_BUNDLE_CANDIDATES,
+            BuildPlane.STATE_VOLUME,
+            3);
+
+    assertEquals(Optional.empty(), plane.ensure(null));
+    List<String> run = fake.calls("run").getFirst();
+    assertTrue(run.get(run.indexOf("-e") + 1).contains("max-parallelism = 3"));
+  }
+
+  @Test
+  void aDifferentMaxParallelismChangesTheStampAndRecreatesTheBuilder() throws Exception {
+    FakeDocker fake = new FakeDocker(dir);
+    BuildPlane onDefault = new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0");
+    BuildPlane onThree =
+        new BuildPlane(
+            fake.docker(10),
+            fake.binary,
+            "moby/buildkit:v0.33.0",
+            List.of(),
+            List.of(),
+            BuildPlane.HOST_CA_BUNDLE_CANDIDATES,
+            BuildPlane.STATE_VOLUME,
+            3);
+    assertTrue(
+        !onDefault.stamp().equals(onThree.stamp()), "max-parallelism is stamp material");
+    // The running builder was started under the default (1) configuration.
+    fake.answer("inspect", 0, onDefault.stamp() + "|running\n", "");
+
+    assertEquals(Optional.empty(), onThree.ensure(null));
+    assertEquals(List.of(List.of("rm", "-f", "qits-ci-runner-buildkitd")), fake.calls("rm"));
+    List<String> run = fake.calls("run").getFirst();
+    assertTrue(run.contains("qits.ci.runner.buildkitd=" + onThree.stamp()));
+  }
+
+  @Test
+  void ackMirrorsPreserveTheConfiguredMaxParallelism() {
+    BuildPlane plane =
+        new BuildPlane(
+            null,
+            "docker",
+            "moby/buildkit:v0.33.0",
+            List.of(),
+            List.of(),
+            BuildPlane.HOST_CA_BUNDLE_CANDIDATES,
+            BuildPlane.STATE_VOLUME,
+            3);
+    BuildPlane rewritten = plane.withRegistryMirrors(ACK_MIRRORS);
+
+    assertTrue(rewritten.toml().contains("max-parallelism = 3"));
   }
 }

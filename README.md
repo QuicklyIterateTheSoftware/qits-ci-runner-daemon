@@ -245,6 +245,7 @@ reason, and the install script passes each one that is set in its environment (p
 | `QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES` | Comma list of `host[:port]` the builder speaks plain HTTP to. | empty |
 | `QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS` | Comma list of `from=to` registry rewrites; `to` may carry a path (`mirror:8080/hub`). | empty |
 | `QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME` | The volume the runner's own buildkitd keeps its content store in. Changing it is stamp material and replaces the builder (the old volume is left as is). | `qits-buildkitd-state` |
+| `QITS_CI_RUNNER_BUILDKIT_MAX_PARALLELISM` | How many build operations (`RUN`, pull, copy) the runner's own buildkitd runs at once, across all builds. Several GraalVM native-image builds running concurrently in one builder are each memory-hungry enough to push the host into the OOM killer; a bounded builder queues the second one instead of risking that. | `1` |
 | `QITS_CI_RUNNER_ROLLOVER_TIMEOUT` | Seconds a successor has to take over before it is removed and the update retried. | `180` |
 | `QITS_CI_RUNNER_TELEMETRY_URL` | The OTLP endpoint the runner's own log is shipped to (`/v1/logs` is appended). Empty switches it off. Not passed by the install script yet. | derived: `https://ci.<domain>` → `https://observability.<domain>/observability/api/otel`; none when the CI url's host is not `ci.…` |
 | `QITS_CI_RUNNER_PRINT_VERSION` | `1`: print the runner version and exit 0, needing nothing else. For the image's smoke test. | unset |
