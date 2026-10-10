@@ -42,6 +42,12 @@
              runner onto RunnerRuntime is qits-772) in ci-runner. -->
         <qits.runner.version>2026.1009.184810</qits.runner.version>
 
+        <!-- The contracts (qits-1149): the shared golden-master reader and the recorded answers of
+             the two providers the runner calls. Exact versions; test scope only. -->
+        <qits.pact-consumer.version>2026.1010.140259</qits.pact-consumer.version>
+        <qits.ci-golden-masters.version>2026.1010.134241</qits.ci-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1010.134259</qits.idp-golden-masters.version>
+
         <!-- Where the platform publishes it. Overridden by CI (-Dqits.maven.repository.url), derived
              from QITS_DOMAIN; the default below is the public host. -->
         <qits.maven.repository.url>https://registry.qits.wohlben.eu/artifacts/maven/maven</qits.maven.repository.url>
@@ -88,6 +94,21 @@
                 <groupId>eu.wohlben.qits</groupId>
                 <artifactId>qits-runner-toolkit</artifactId>
                 <version>${qits.runner.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>eu.wohlben.qits</groupId>
+                <artifactId>qits-pact-consumer</artifactId>
+                <version>${qits.pact-consumer.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>eu.wohlben.qits</groupId>
+                <artifactId>qits-ci-golden-masters</artifactId>
+                <version>${qits.ci-golden-masters.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>eu.wohlben.qits</groupId>
+                <artifactId>qits-idp-golden-masters</artifactId>
+                <version>${qits.idp-golden-masters.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

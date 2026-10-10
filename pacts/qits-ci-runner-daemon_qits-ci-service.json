@@ -1,0 +1,221 @@
+{
+  "consumer": {
+    "name": "qits-ci-runner-daemon"
+  },
+  "interactions": [
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-ci-service",
+            "operationId": "registerRunner"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-runner-daemon",
+            "event": "StartupEvent",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "StartupEvent: registerRunner",
+      "key": "5087d246",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "a registered runner",
+          "params": {
+            "authorization": "Bearer qits_tok_contract-registration",
+            "runnerId": "00000000-0000-4000-8000-000000000001"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "capabilities": {
+              "arch": "amd64",
+              "docker": true
+            }
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          },
+          "path": {
+            "dataType": "RAW",
+            "expression": "/ci/api/runners/${runnerId}/register",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Bearer qits_tok_contract-registration"
+          ],
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "method": "POST",
+        "path": "/ci/api/runners/00000000-0000-4000-8000-000000000001/register"
+      },
+      "response": {
+        "status": 409
+      },
+      "type": "Synchronous/HTTP"
+    },
+    {
+      "comments": {
+        "references": {
+          "qits-call": {
+            "app": "qits-ci-service",
+            "operationId": "registerRunner"
+          },
+          "qits-trigger": {
+            "app": "qits-ci-runner-daemon",
+            "event": "StartupEvent",
+            "kind": "event"
+          }
+        }
+      },
+      "description": "StartupEvent: registerRunner",
+      "key": "90764c93",
+      "pending": false,
+      "providerStates": [
+        {
+          "name": "an unregistered runner",
+          "params": {
+            "authorization": "Bearer qits_tok_contract-registration",
+            "runnerId": "00000000-0000-4000-8000-000000000001"
+          }
+        }
+      ],
+      "request": {
+        "body": {
+          "content": {
+            "capabilities": {
+              "arch": "amd64",
+              "docker": true
+            }
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "generators": {
+          "header": {
+            "Authorization": {
+              "dataType": "RAW",
+              "expression": "${authorization}",
+              "type": "ProviderState"
+            }
+          },
+          "path": {
+            "dataType": "RAW",
+            "expression": "/ci/api/runners/${runnerId}/register",
+            "type": "ProviderState"
+          }
+        },
+        "headers": {
+          "Authorization": [
+            "Bearer qits_tok_contract-registration"
+          ],
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "method": "POST",
+        "path": "/ci/api/runners/00000000-0000-4000-8000-000000000001/register"
+      },
+      "response": {
+        "body": {
+          "content": {
+            "audience": "qits-platform",
+            "clientId": "run-client-1",
+            "secret": "run-s3cr3t-1",
+            "socketUrl": "wss://ci.qits.suite.example/ci/runners/socket",
+            "tokenUrl": "https://idp.qits.suite.example/idp/token"
+          },
+          "contentType": "application/json",
+          "encoded": false
+        },
+        "headers": {
+          "Content-Type": [
+            "application/json"
+          ]
+        },
+        "matchingRules": {
+          "body": {
+            "$.audience": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.clientId": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.secret": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.socketUrl": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            },
+            "$.tokenUrl": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type"
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "application/json.*"
+                }
+              ]
+            }
+          }
+        },
+        "status": 200
+      },
+      "type": "Synchronous/HTTP"
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "4.0"
+    },
+    "plugins": []
+  },
+  "provider": {
+    "name": "qits-ci-service"
+  }
+}

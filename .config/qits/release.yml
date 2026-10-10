@@ -18,6 +18,17 @@ artifacts:
   # where `makeBom` writes it — and checks on the last step that it reached the store.
   - { type: maven, name: "eu.wohlben.qits:qits-ci-runner-protocol", path: ci-runner-protocol, sbom: ci-runner-protocol/target/sbom.json }
 
+# THE CONSUMER PACTS (qits-1149): the runner's register call to qits-ci and its token mint at
+# qits-idp, built from those providers' golden masters by CiServicePactTest and IdpServicePactTest
+# and kept flat in `pacts/`. The platform packs each file as
+# eu.wohlben.qits:qits-ci-runner-daemon-pacts-<provider> and publishes it only when it changed. The
+# runner serves no HTTP, so it records no golden masters of its own.
+contracts:
+  application: qits-ci-runner
+  pacts:
+    qits-ci-service: { packages: [maven] }
+    qits-idp-service: { packages: [maven] }
+
 # AN IMAGE AND A JAR FROM ONE TREE, WHICH NO ARCHETYPE PUBLISHES — the shape of qits-workspace-daemon
 # and qits-projects-daemon, which name `java-service` for the family and declare both slots
 # themselves, as this file does. It used to ride `daemon`, whose recipe publishes one bare binary;

@@ -59,6 +59,22 @@
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!-- The consumer pacts (qits-1149): the shared reader and the providers' recordings. -->
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-pact-consumer</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-ci-golden-masters</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>eu.wohlben.qits</groupId>
+            <artifactId>qits-idp-golden-masters</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
