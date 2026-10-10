@@ -44,7 +44,7 @@
 
         <!-- The contracts (qits-1149): the shared golden-master reader and the recorded answers of
              the two providers the runner calls. Exact versions; test scope only. -->
-        <qits.pact-consumer.version>2026.1010.140259</qits.pact-consumer.version>
+        <qits.pact-consumer.version>2026.1010.141817</qits.pact-consumer.version>
         <qits.ci-golden-masters.version>2026.1010.134241</qits.ci-golden-masters.version>
         <qits.idp-golden-masters.version>2026.1010.134259</qits.idp-golden-masters.version>
 
