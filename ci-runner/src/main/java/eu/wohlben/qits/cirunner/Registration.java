@@ -93,15 +93,17 @@ public final class Registration {
   private ClientCredentials register(RunnerEnv env, Capabilities capabilities, String token)
       throws Failed {
     String url = env.url() + "/ci/api/runners/" + env.runnerId() + "/register";
-    JsonObject body =
-        new JsonObject()
-            .put(
-                "capabilities",
-                new JsonObject()
-                    .put("docker", capabilities.docker())
-                    .put("arch", capabilities.arch())
-                    .put("os", capabilities.os())
-                    .put("labels", new JsonObject(Map.copyOf(capabilities.labels()))));
+    // An unknown os and no labels are left out, not sent as null and {}: qits-ci reads an absent
+    // field the same way, and its recorded contract (qits-1149) holds docker and arch only.
+    JsonObject caps =
+        new JsonObject().put("docker", capabilities.docker()).put("arch", capabilities.arch());
+    if (capabilities.os() != null) {
+      caps.put("os", capabilities.os());
+    }
+    if (!capabilities.labels().isEmpty()) {
+      caps.put("labels", new JsonObject(Map.copyOf(capabilities.labels())));
+    }
+    JsonObject body = new JsonObject().put("capabilities", caps);
     Http.Response response;
     try {
       response =
