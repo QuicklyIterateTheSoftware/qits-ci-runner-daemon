@@ -40,12 +40,12 @@
              (the shared health report wire, HealthWire) in ci-runner-protocol, and
              qits-runner-toolkit (the health-check machinery, and nothing else yet — moving the
              runner onto RunnerRuntime is qits-772) in ci-runner. -->
-        <qits.runner.version>2026.1009.184810</qits.runner.version>
+        <qits.runner.version>2026.1010.153003</qits.runner.version>
 
         <!-- The contracts (qits-1149): the shared golden-master reader and the recorded answers of
              the two providers the runner calls. Exact versions; test scope only. -->
         <qits.pact-consumer.version>2026.1010.141817</qits.pact-consumer.version>
-        <qits.ci-golden-masters.version>2026.1010.134241</qits.ci-golden-masters.version>
+        <qits.ci-golden-masters.version>2026.1010.174604</qits.ci-golden-masters.version>
         <qits.idp-golden-masters.version>2026.1010.134259</qits.idp-golden-masters.version>
 
         <!-- Where the platform publishes it. Overridden by CI (-Dqits.maven.repository.url), derived
