@@ -112,13 +112,15 @@
         }
       },
       "description": "the control socket dial: issueToken",
-      "key": "fcd0a8e7",
+      "key": "898c12d9",
       "pending": false,
       "providerStates": [
         {
           "name": "no commissioned client with the given id",
           "params": {
             "audience": "qits-platform",
+            "authorization": "Basic dGVzdC1icm9hZDp0ZXN0LWJyb2FkLXNlY3JldA==",
+            "callerClientId": "test-broad",
             "clientId": "dyn-contract-unknown",
             "clientSecret": "contract-unknown-secret",
             "secret": "contract-unknown-secret"
