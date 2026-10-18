@@ -224,7 +224,7 @@ NEW_TOKEN="qits_tok_ROTATED-$$-DO-NOT-PRINT"
 reset_stub
 printf 'aaaaaaaaaaaa\nbbbbbbbbbbbb\n' > "$WORK/ps-answer"
 install "$NEW_TOKEN" rerun \
-  QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES=dev-qits-artifacts:8080,dev-qits-platform-mirror:8080 \
+  QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES=dev-qits-artifacts:8080,dev-qits-mirror:8080 \
   || fail "the install script exited nonzero (re-run)"
 
 called rm -f aaaaaaaaaaaa && called rm -f bbbbbbbbbbbb || fail "a re-run did not remove the runner containers already there"
@@ -234,7 +234,7 @@ grep -qxF "QITS_CI_RUNNER_REGISTRATION_TOKEN=$NEW_TOKEN" "$WORK/run-env" || fail
 called run --rm --entrypoint rm -v "qits-ci-runner-state-$ID8:/var/lib/qits-ci-runner" "$IMAGE" -f /var/lib/qits-ci-runner/client.json \
   || fail "a re-run did not remove client.json, so the new token would never register"
 grep -q '^docker volume rm' "$CALLS" && fail "a re-run removed the state volume"
-tail -2 "$WORK/run-argv" | head -1 | grep -qxF 'QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES=dev-qits-artifacts:8080,dev-qits-platform-mirror:8080' \
+tail -2 "$WORK/run-argv" | head -1 | grep -qxF 'QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES=dev-qits-artifacts:8080,dev-qits-mirror:8080' \
   || fail "a tuning variable that was set did not reach the container"
 grep -q 'QITS_CI_RUNNER_ROLLOVER_TIMEOUT\|QITS_CI_RUNNER_DOCKER_TIMEOUT' "$WORK/run-argv" && fail "a tuning variable that was not set reached the container"
 grep -qF -- "$NEW_TOKEN" "$WORK/output-rerun.log" && fail "the new token appeared in the output"
