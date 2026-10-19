@@ -150,15 +150,15 @@ class DecommissionTest {
 
   @Test
   void aConfiguredBuildkitVolumeIsRemovedInsteadOfTheDefault() throws Exception {
-    assertEquals(0, finish(null, "operators-own-buildkitd-state"));
+    assertEquals(0, finish(null, "qits-ci-runner-operators-own-state"));
     assertEquals(
-        List.of(List.of("volume", "rm", "operators-own-buildkitd-state")), docker.calls("volume"));
+        List.of(List.of("volume", "rm", "qits-ci-runner-operators-own-state")), docker.calls("volume"));
     assertTrue(
         said.stream()
             .anyMatch(
                 line ->
                     line.contains(
-                        "removed the builder's state volume operators-own-buildkitd-state")),
+                        "removed the builder's state volume qits-ci-runner-operators-own-state")),
         () -> String.join("\n", said));
   }
 
@@ -167,6 +167,18 @@ class DecommissionTest {
     assertEquals(0, finish(null, "  "));
     assertEquals(
         List.of(List.of("volume", "rm", BuildPlane.STATE_VOLUME)), docker.calls("volume"));
+  }
+
+  @Test
+  void thePlatformBuildersVolumeIsNeverRemoved() throws Exception {
+    assertEquals(0, finish(null, "qits-buildkitd-state"), () -> String.join("\n", said));
+    List<List<String>> volumeCalls = docker.calls("volume");
+    assertTrue(volumeCalls.isEmpty(), volumeCalls::toString);
+    assertFalse(volumeCalls.contains(List.of("volume", "rm", "qits-buildkitd-state")));
+    assertTrue(
+        said.stream()
+            .anyMatch(line -> line.contains("left the builder's state volume qits-buildkitd-state")),
+        () -> String.join("\n", said));
   }
 
   @Test

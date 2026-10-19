@@ -30,10 +30,15 @@ import org.jboss.logging.Logger;
  * never {@code qits-buildkitd}: a runner on the platform host (the INTERNAL plane this epic tests on)
  * shares its docker with qits-containers, and a runner that "converged" the platform's builder onto
  * its own stamp would replace the builder every platform build uses. The state volume defaults to
- * {@value #STATE_VOLUME}, the name the brief asks for — shared with the platform's builder on that
- * one host, which costs nothing but a warm cache — and is operator-configurable ({@code
+ * {@value #STATE_VOLUME} — the runner's own, the name qits-bootstrap's same-node runner already sets
+ * explicitly, and never qits-containers' {@code qits-buildkitd-state}, the platform builder's own
+ * volume (see {@link #OWNED_PREFIX}: a runner that once defaulted to that shared name removed it out
+ * from under the platform builder on decommission) — and is operator-configurable ({@code
  * QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME}, see {@link RunnerEnv#BUILDKIT_STATE_VOLUME}) for a host
- * where sharing it is the wrong call. The network is the runner-owned bridge {@value #NETWORK}.
+ * where even this default is the wrong call. A runner rolling over from the old shared default
+ * recreates its builder against the new volume — the volume is stamp material — and leaves the old
+ * one in place, an operator's to reclaim by hand. The network is the runner-owned bridge
+ * {@value #NETWORK}.
  *
  * <p><b>Ownership is the stamp label.</b> A container under the name carrying {@value #STAMP_LABEL}
  * is this runner's to adopt, start or replace; one without it is somebody else's and is refused, not
@@ -73,11 +78,22 @@ public final class BuildPlane {
   /**
    * Where the builder keeps its content store across replacements, when the operator names none —
    * {@code QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME}'s default (see {@link
-   * RunnerEnv#BUILDKIT_STATE_VOLUME}). The instance's own {@link #stateVolume} is what every method
-   * below actually uses; this constant is the fallback {@link RunnerEnv} resolves to and the one
-   * value a test not exercising the variable should expect.
+   * RunnerEnv#BUILDKIT_STATE_VOLUME}). This runner's own volume, under {@link #OWNED_PREFIX} —
+   * never qits-containers' {@code qits-buildkitd-state}, the platform builder's volume, which this
+   * default used to share and which {@link Decommission} must never remove. The instance's own
+   * {@link #stateVolume} is what every method below actually uses; this constant is the fallback
+   * {@link RunnerEnv} resolves to and the one value a test not exercising the variable should expect.
    */
-  public static final String STATE_VOLUME = "qits-buildkitd-state";
+  public static final String STATE_VOLUME = "qits-ci-runner-buildkitd-state";
+
+  /**
+   * The prefix every name this runner creates, and so may ever remove, carries. {@code
+   * qits-buildkitd-state} belongs to qits-containers' platform builder and is never this runner's:
+   * {@link RunnerEnv} refuses a configured {@link #STATE_VOLUME} override outside this prefix, and
+   * {@link Decommission} refuses to run {@code docker volume rm} on one, whatever an operator (or an
+   * old rollover's leftover environment) names.
+   */
+  public static final String OWNED_PREFIX = "qits-ci-runner-";
 
   /**
    * How many build operations this builder may run at once when the operator names none — {@code

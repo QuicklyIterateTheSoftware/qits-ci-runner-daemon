@@ -40,14 +40,14 @@ class BuildPlaneTest {
             "network", "create", "--driver", "bridge", "--label", "qits.ci.runner.buildkitd=network",
             "qits-ci-runner"),
         calls.get(1));
-    assertEquals(List.of("volume", "create", "qits-buildkitd-state"), calls.get(2));
+    assertEquals(List.of("volume", "create", "qits-ci-runner-buildkitd-state"), calls.get(2));
     assertEquals(List.of("pull", "moby/buildkit:v0.33.0"), calls.get(5));
     List<String> run = calls.get(6);
     List<String> expected = plane.runArgv(plane.stamp());
     assertEquals(expected.subList(1, expected.size()), run);
     assertTrue(run.contains("--privileged"));
     assertEquals("qits-ci-runner-buildkitd", run.get(run.indexOf("--name") + 1));
-    assertEquals("qits-buildkitd-state:/var/lib/buildkit", run.get(run.indexOf("-v") + 1));
+    assertEquals("qits-ci-runner-buildkitd-state:/var/lib/buildkit", run.get(run.indexOf("-v") + 1));
     assertTrue(run.get(run.indexOf("-e") + 1).contains("networkMode = \"host\""));
   }
 
@@ -399,12 +399,12 @@ class BuildPlaneTest {
             .answer("image-inspect", 1, "", "No such image");
     BuildPlane plane = new BuildPlane(fake.docker(10), fake.binary, "moby/buildkit:v0.33.0");
 
-    assertEquals("qits-buildkitd-state", plane.stateVolume());
+    assertEquals("qits-ci-runner-buildkitd-state", plane.stateVolume());
     assertEquals(Optional.empty(), plane.ensure(null));
     assertEquals(
-        List.of("volume", "create", "qits-buildkitd-state"), fake.calls("volume").getFirst());
+        List.of("volume", "create", "qits-ci-runner-buildkitd-state"), fake.calls("volume").getFirst());
     List<String> run = fake.calls("run").getFirst();
-    assertEquals("qits-buildkitd-state:/var/lib/buildkit", run.get(run.indexOf("-v") + 1));
+    assertEquals("qits-ci-runner-buildkitd-state:/var/lib/buildkit", run.get(run.indexOf("-v") + 1));
   }
 
   @Test
@@ -422,15 +422,15 @@ class BuildPlaneTest {
             List.of(),
             List.of(),
             BuildPlane.HOST_CA_BUNDLE_CANDIDATES,
-            "operators-own-buildkitd-state");
+            "qits-ci-runner-operators-own-state");
 
-    assertEquals("operators-own-buildkitd-state", plane.stateVolume());
+    assertEquals("qits-ci-runner-operators-own-state", plane.stateVolume());
     assertEquals(Optional.empty(), plane.ensure(null));
     assertEquals(
-        List.of("volume", "create", "operators-own-buildkitd-state"),
+        List.of("volume", "create", "qits-ci-runner-operators-own-state"),
         fake.calls("volume").getFirst());
     List<String> run = fake.calls("run").getFirst();
-    assertEquals("operators-own-buildkitd-state:/var/lib/buildkit", run.get(run.indexOf("-v") + 1));
+    assertEquals("qits-ci-runner-operators-own-state:/var/lib/buildkit", run.get(run.indexOf("-v") + 1));
   }
 
   @Test
@@ -445,7 +445,7 @@ class BuildPlaneTest {
             List.of(),
             List.of(),
             BuildPlane.HOST_CA_BUNDLE_CANDIDATES,
-            "operators-own-buildkitd-state");
+            "qits-ci-runner-operators-own-state");
     assertTrue(
         !onDefault.stamp().equals(onOther.stamp()), "the state volume is stamp material");
     // The running builder was started under the default volume.

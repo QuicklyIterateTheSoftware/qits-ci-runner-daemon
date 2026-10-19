@@ -45,11 +45,15 @@ import org.jboss.logging.Logger;
  * restarts and redials forever, which was the defect. A helper that fails stays, exited, with its
  * log; one that succeeds removes itself last.
  *
- * <p><b>The builder is best-effort.</b> {@link BuildPlane#CONTAINER}, {@link
- * BuildPlane#STATE_VOLUME} and {@link BuildPlane#NETWORK} are removed unconditionally — one runner
- * per node means the runner being deleted is always the builder's only claimant — but a failure
- * there is logged and never counts against {@code clean}: an operator's leftover builder is not a
- * reason to leave the runner itself stuck undecommissioned.
+ * <p><b>The builder is best-effort, and its volume is removed only when it is this runner's.</b>
+ * {@link BuildPlane#CONTAINER} and {@link BuildPlane#NETWORK} are removed unconditionally — one
+ * runner per node means the runner being deleted is always the builder's only claimant — and a
+ * failure there is logged and never counts against {@code clean}: an operator's leftover builder is
+ * not a reason to leave the runner itself stuck undecommissioned. The state volume is removed only
+ * when it carries {@link BuildPlane#OWNED_PREFIX}; qits-containers' {@code qits-buildkitd-state}, the
+ * platform builder's own volume, is left exactly as it is, whatever {@code
+ * QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME} said when this runner was alive — see {@link
+ * #removeBuildPlane}.
  */
 public final class Decommission {
 
@@ -231,17 +235,19 @@ public final class Decommission {
   }
 
   /**
-   * A volume is released a moment after the container using it is removed, so a refusal is retried
-   * a few times before it counts. An absent volume is as good as a removed one.
-   */
-  /**
    * The node's shared {@link BuildPlane} — one runner per node, so a deleted runner is the node's
    * only claim on its builder and takes it too. Best-effort and never {@code clean &= }: a builder
    * that would not go is an operator's cleanup, not a reason to leave the runner itself
    * undecommissioned. {@code buildkitVolume} is the volume the deleted runner actually configured
    * ({@link BuildPlane#STATE_VOLUME} unless it set {@code QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME}) —
-   * never the constant, so a runner pointed at its own volume does not leave the platform's shared
-   * one untouched, or, worse, remove it.
+   * never the constant, so a runner pointed at its own volume does not leave that one untouched.
+   *
+   * <p><b>The volume is removed only when it is this runner's to remove</b> — only when it starts
+   * with {@link BuildPlane#OWNED_PREFIX}. {@link Main#decommissionHelper} reads {@code
+   * QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME} straight off the helper's environment, bypassing {@link
+   * RunnerEnv#parse}'s own check on that variable, so this is the one guard that actually holds: a
+   * stale or forged environment naming qits-containers' {@code qits-buildkitd-state} — the platform
+   * builder's volume, never this runner's — is left alone, not removed, whatever it says.
    */
   private static void removeBuildPlane(
       Docker docker, String dockerBinary, String buildkitVolume, Consumer<String> say) {
@@ -252,12 +258,19 @@ public final class Decommission {
       say.accept(
           "could not remove the builder " + BuildPlane.CONTAINER + ": " + container.detail());
     }
-    Docker.Result volume = docker.run(RunnerArgv.volumeRm(dockerBinary, buildkitVolume));
-    if (volume.ok() || volume.detail().toLowerCase().contains("no such volume")) {
-      say.accept("removed the builder's state volume " + buildkitVolume);
-    } else {
+    if (!buildkitVolume.startsWith(BuildPlane.OWNED_PREFIX)) {
       say.accept(
-          "could not remove the builder's state volume " + buildkitVolume + ": " + volume.detail());
+          "left the builder's state volume " + buildkitVolume + ": not a " + BuildPlane.OWNED_PREFIX
+              + " volume");
+    } else {
+      Docker.Result volume = docker.run(RunnerArgv.volumeRm(dockerBinary, buildkitVolume));
+      if (volume.ok() || volume.detail().toLowerCase().contains("no such volume")) {
+        say.accept("removed the builder's state volume " + buildkitVolume);
+      } else {
+        say.accept(
+            "could not remove the builder's state volume " + buildkitVolume + ": "
+                + volume.detail());
+      }
     }
     Docker.Result network = docker.run(RunnerArgv.networkRm(dockerBinary, BuildPlane.NETWORK));
     if (network.ok() || network.detail().toLowerCase().contains("not found")) {
@@ -268,6 +281,10 @@ public final class Decommission {
     }
   }
 
+  /**
+   * A volume is released a moment after the container using it is removed, so a refusal is retried
+   * a few times before it counts. An absent volume is as good as a removed one.
+   */
   private static boolean removeVolume(
       Docker docker, String dockerBinary, String volume, Settings settings, Consumer<String> say) {
     Docker.Result gone = null;

@@ -244,7 +244,7 @@ reason, and the install script passes each one that is set in its environment (p
 | `QITS_CI_RUNNER_BUILDKIT_IMAGE` | The image of the runner's own buildkitd. | `moby/buildkit:v0.33.0` |
 | `QITS_CI_RUNNER_BUILDKIT_HTTP_REGISTRIES` | Comma list of `host[:port]` the builder speaks plain HTTP to. | empty |
 | `QITS_CI_RUNNER_BUILDKIT_REGISTRY_MIRRORS` | Comma list of `from=to` registry rewrites; `to` may carry a path (`mirror:8080/hub`). | empty |
-| `QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME` | The volume the runner's own buildkitd keeps its content store in. Changing it is stamp material and replaces the builder (the old volume is left as is). | `qits-buildkitd-state` |
+| `QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME` | The volume the runner's own buildkitd keeps its content store in. Must start with `qits-ci-runner-`: it is this runner's to remove on decommission, and must never be qits-containers' `qits-buildkitd-state`, the platform builder's own volume. Changing it is stamp material and replaces the builder (the old volume is left as is). | `qits-ci-runner-buildkitd-state` |
 | `QITS_CI_RUNNER_BUILDKIT_MAX_PARALLELISM` | How many build operations (`RUN`, pull, copy) the runner's own buildkitd runs at once, across all builds. Several GraalVM native-image builds running concurrently in one builder are each memory-hungry enough to push the host into the OOM killer; a bounded builder queues the second one instead of risking that. | `1` |
 | `QITS_CI_RUNNER_ROLLOVER_TIMEOUT` | Seconds a successor has to take over before it is removed and the update retried. | `180` |
 | `QITS_CI_RUNNER_TELEMETRY_URL` | The OTLP endpoint the runner's own log is shipped to (`/v1/logs` is appended). Empty switches it off. Not passed by the install script yet. | derived: `https://ci.<domain>` → `https://observability.<domain>/observability/api/otel`; none when the CI url's host is not `ci.…` |
@@ -293,7 +293,7 @@ prune` or `docker image prune -a` — the machine may hold things that are not t
   for 7 days that no container was created from is removed, then `docker image prune -f` removes
   dangling layers. Images the runner never launched are not touched. A pass never removes an image
   while a launch is in flight; that image waits for the next pass.
-- **Build cache.** buildkitd's own garbage collector (`qits-buildkitd-state`): cache unused for 72h
+- **Build cache.** buildkitd's own garbage collector (`qits-ci-runner-buildkitd-state`): cache unused for 72h
   goes, and the total is kept under 20GB, least recently used first. It runs when the builder starts
   and after each build. A builder an older runner started without this policy is replaced once, when
   no run is held; its cache volume is kept.
@@ -509,7 +509,7 @@ the container's last output first — the attempt it belonged to was already giv
 
 **The build plane.** A step whose spec sets `buildPlane` (qits-ci's `docker: true` or `build: true`)
 or binds the docker socket gets the runner's own `qits-ci-runner-buildkitd` (privileged, state volume
-`qits-buildkitd-state`, on the runner-owned bridge network `qits-ci-runner`), started on first need.
+`qits-ci-runner-buildkitd-state`, on the runner-owned bridge network `qits-ci-runner`), started on first need.
 The step joins that network and receives `BUILDKIT_HOST=tcp://qits-ci-runner-buildkitd:1234` unless
 its spec already carries the key — an empty value is qits-ci's "switched off" and is never overwritten.
 A step that names its own network as well is attached to both, which needs Docker Engine 25 or newer,

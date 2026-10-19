@@ -43,8 +43,12 @@ public record RunnerEnv(
    * content store in. Read here (rather than left a {@link BuildPlane} constant) because {@link
    * Decommission}'s helper — a fresh process, not this one — needs the same value to remove the
    * volume this runner actually used, not the default. Defaults to {@link BuildPlane#STATE_VOLUME},
-   * the platform builder's own volume: sharing it costs nothing but a warm cache on the one host
-   * where both run, which is the point of the default.
+   * this runner's own volume — never qits-containers' {@code qits-buildkitd-state}, the platform
+   * builder's volume, which an earlier default shared and which {@link Decommission} removed on
+   * decommission along with it. A non-blank value must start with {@link BuildPlane#OWNED_PREFIX},
+   * checked here before it reaches a constructor: this is the one place standing between an
+   * operator's typo (or the platform's own name, named by habit) and a decommission that reaches for
+   * the platform's builder instead of this runner's.
    */
   public static final String BUILDKIT_STATE_VOLUME = "QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME";
 
@@ -235,6 +239,12 @@ public record RunnerEnv(
     // without escaping, and an id qits-ci minted is always inside it.
     if (!runnerId.trim().matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")) {
       throw new Invalid("QITS_CI_RUNNER_ID is not a runner id: '" + runnerId.trim() + "'");
+    }
+    if (!blank(buildkitStateVolume)
+        && !buildkitStateVolume.trim().startsWith(BuildPlane.OWNED_PREFIX)) {
+      throw new Invalid(
+          BUILDKIT_STATE_VOLUME + " must start with " + BuildPlane.OWNED_PREFIX + ": '"
+              + buildkitStateVolume.trim() + "'");
     }
     return new RunnerEnv(
         url.trim().replaceAll("/+$", ""),

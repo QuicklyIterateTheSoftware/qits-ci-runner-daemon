@@ -352,9 +352,9 @@ class RunnerArgvTest {
 
     List<String> configured =
         RunnerArgv.runDecommissioner(
-            "docker", "r1", "sha256:0123abcd", null, "operators-own-buildkitd-state");
+            "docker", "r1", "sha256:0123abcd", null, "qits-ci-runner-operators-own-state");
     assertTrue(
-        configured.contains(RunnerEnv.BUILDKIT_STATE_VOLUME + "=operators-own-buildkitd-state"),
+        configured.contains(RunnerEnv.BUILDKIT_STATE_VOLUME + "=qits-ci-runner-operators-own-state"),
         configured::toString);
   }
 }

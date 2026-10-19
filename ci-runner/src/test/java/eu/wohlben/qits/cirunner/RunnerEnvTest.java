@@ -125,7 +125,7 @@ class RunnerEnvTest {
         RunnerEnv.parse(
             "https://ci.example", "r1", null, null, null, null, null, null, null, null, null, null,
             null);
-    assertEquals("qits-buildkitd-state", unset.buildkitStateVolume());
+    assertEquals("qits-ci-runner-buildkitd-state", unset.buildkitStateVolume());
     assertEquals(BuildPlane.STATE_VOLUME, unset.buildkitStateVolume());
 
     RunnerEnv blank =
@@ -137,8 +137,20 @@ class RunnerEnvTest {
     RunnerEnv set =
         RunnerEnv.parse(
             "https://ci.example", "r1", null, null, null, null, null, null, null, null, null, null,
-            " operators-own-buildkitd-state ");
-    assertEquals("operators-own-buildkitd-state", set.buildkitStateVolume());
+            " qits-ci-runner-operators-own-state ");
+    assertEquals("qits-ci-runner-operators-own-state", set.buildkitStateVolume());
+  }
+
+  @Test
+  void aBuildkitStateVolumeOutsideTheRunnersPrefixIsRefused() {
+    RunnerEnv.Invalid invalid =
+        assertThrows(
+            RunnerEnv.Invalid.class,
+            () ->
+                RunnerEnv.parse(
+                    "https://ci.example", "r1", null, null, null, null, null, null, null, null,
+                    null, null, "qits-buildkitd-state"));
+    assertTrue(invalid.getMessage().contains("QITS_CI_RUNNER_BUILDKIT_STATE_VOLUME"));
   }
 
   @Test
