@@ -14,8 +14,9 @@ import java.util.Map;
  * free-form argv, no volume and no host path. The one bind a runner will ever make is {@link
  * #hostDockerSocket}, a boolean precisely so that no sender can choose what gets mounted. Fields
  * {@code ContainerSpec} has and qits-ci never sets for a step — aliases, volume and shared mounts,
- * pull policy, init — are absent rather than carried empty: a field on the wire is a capability the
- * runner has to implement and defend, and nothing asks for these.
+ * pull policy — are absent rather than carried empty: a field on the wire is a capability the
+ * runner has to implement and defend, and nothing asks for these. {@link #init} is the exception,
+ * carried since qits-1509 because qits-ci needs a reaper (see below).
  *
  * <p><b>The sandbox is flattened</b> ({@code capDropAll} … {@code oomScoreAdj} rather than a nested
  * {@code security} object) because this is a wire record with one consumer, and a nested object is
@@ -45,6 +46,9 @@ import java.util.Map;
  * @param hostDockerSocket the one bind: {@code /var/run/docker.sock}, root-equivalent on the host.
  * @param name the container name — qits-ci's own, so {@link Reap} can address it.
  * @param buildPlane the step builds images and needs the runner's buildkitd — see above.
+ * @param init start the container with docker's {@code --init}, so an init process is PID 1 and
+ *     reaps the orphans repo-controlled code leaves (each would otherwise hold a pid against
+ *     {@code --pids-limit}).
  */
 public record WorkloadSpec(
     String image,
@@ -64,7 +68,8 @@ public record WorkloadSpec(
     String cpus,
     Integer oomScoreAdj,
     String name,
-    boolean buildPlane) {
+    boolean buildPlane,
+    boolean init) {
 
   /**
    * Nulls normalize to empty collections and blank optional strings to null, so a sender that
@@ -86,6 +91,36 @@ public record WorkloadSpec(
     name = blankToNull(name);
   }
 
+  /**
+   * The signature before {@link #init} existed, for a sender compiled against the older jar —
+   * qits-ci-service, until it bumps past qits-1509. Delegates with {@code init = false}, so a
+   * caller that never heard of the flag starts a container exactly as it did before.
+   */
+  public WorkloadSpec(
+      String image,
+      List<String> entrypoint,
+      List<String> args,
+      Map<String, String> env,
+      Map<String, String> labels,
+      String network,
+      List<String> extraHosts,
+      String user,
+      boolean hostDockerSocket,
+      boolean capDropAll,
+      boolean noNewPrivileges,
+      String memory,
+      String memorySwap,
+      Long pidsLimit,
+      String cpus,
+      Integer oomScoreAdj,
+      String name,
+      boolean buildPlane) {
+    this(
+        image, entrypoint, args, env, labels, network, extraHosts, user, hostDockerSocket,
+        capDropAll, noNewPrivileges, memory, memorySwap, pidsLimit, cpus, oomScoreAdj, name,
+        buildPlane, false);
+  }
+
   private static String blankToNull(String value) {
     return value == null || value.isBlank() ? null : value;
   }
@@ -103,6 +138,6 @@ public record WorkloadSpec(
   public static WorkloadSpec of(String image, String name) {
     return new WorkloadSpec(
         image, null, null, null, null, null, null, null, false, false, false, null, null, null,
-        null, null, name, false);
+        null, null, name, false, false);
   }
 }

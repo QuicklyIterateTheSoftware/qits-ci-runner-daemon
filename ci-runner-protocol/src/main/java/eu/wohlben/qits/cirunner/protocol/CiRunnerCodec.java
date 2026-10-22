@@ -277,6 +277,7 @@ public final class CiRunnerCodec {
     map.put(Field.OOM_SCORE_ADJ, s.oomScoreAdj());
     map.put(Field.NAME, s.name());
     map.put(Field.BUILD_PLANE, s.buildPlane());
+    map.put(Field.INIT, s.init());
     return map;
   }
 
@@ -304,7 +305,8 @@ public final class CiRunnerCodec {
         str(map, Field.CPUS),
         oom == null ? null : oom.intValue(),
         str(map, Field.NAME),
-        boolVal(map, Field.BUILD_PLANE));
+        boolVal(map, Field.BUILD_PLANE),
+        boolVal(map, Field.INIT));
   }
 
   // --- scalar readers -----------------------------------------------------------------------------

@@ -171,6 +171,7 @@ public final class CiRunnerProtocol {
     public static final String OOM_SCORE_ADJ = "oomScoreAdj";
     public static final String NAME = "name";
     public static final String BUILD_PLANE = "buildPlane";
+    public static final String INIT = "init";
 
     private Field() {}
   }

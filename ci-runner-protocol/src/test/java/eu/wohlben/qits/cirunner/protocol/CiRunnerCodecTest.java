@@ -46,6 +46,7 @@ class CiRunnerCodecTest {
         "4",
         1000,
         "qits-ci-run-1-abc-0",
+        true,
         true);
   }
 
@@ -478,6 +479,22 @@ class CiRunnerCodecTest {
     map.put("stepIndex", 0);
     map.put("workloadSpec", Map.of("image", "alpine:3", "name", "n"));
     assertEquals(new Launch("r", 0, WorkloadSpec.of("alpine:3", "n")), CiRunnerCodec.decode(map));
+  }
+
+  /**
+   * {@code init} arrived with qits-1509, after the first specs; a sender older than it carries no
+   * such key, and that must still decode — to {@code false}, exactly what every spec meant before
+   * the flag existed.
+   */
+  @Test
+  void aSpecWithoutInitDecodesToFalse() {
+    Map<String, Object> map = new LinkedHashMap<>();
+    map.put("type", "launch");
+    map.put("runId", "r");
+    map.put("stepIndex", 0);
+    map.put("workloadSpec", Map.of("image", "alpine:3", "name", "n"));
+    Launch decoded = (Launch) CiRunnerCodec.decode(map);
+    assertFalse(decoded.workloadSpec().init());
   }
 
   @Test

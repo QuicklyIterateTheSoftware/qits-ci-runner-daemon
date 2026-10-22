@@ -73,6 +73,23 @@ class RunnerArgvTest {
   }
 
   @Test
+  void initIsRenderedRightAfterTheNameOnlyWhenTheSpecAskedForIt() {
+    WorkloadSpec withInit =
+        new WorkloadSpec(
+            "alpine:3", null, null, null, null, null, null, null, false, false, false, null,
+            null, null, null, null, "c1", false, true);
+    List<String> argv = RunnerArgv.run("docker", "r1", "run-1", withInit, List.of(), Map.of());
+    int name = argv.indexOf("--name");
+    assertEquals("--init", argv.get(name + 2), argv::toString);
+
+    WorkloadSpec withoutInit = WorkloadSpec.of("alpine:3", "c1");
+    assertFalse(
+        RunnerArgv.run("docker", "r1", "run-1", withoutInit, List.of(), Map.of())
+            .contains("--init"),
+        "init is false unless the spec asked for it");
+  }
+
+  @Test
   void noNetworkIsRenderedWhenTheSpecNamesNone() {
     List<String> argv =
         RunnerArgv.run("docker", "r1", "run-1", step(false, null), List.of(), step(false, null).env());

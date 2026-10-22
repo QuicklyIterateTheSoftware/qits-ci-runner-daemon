@@ -119,6 +119,11 @@ public final class RunnerArgv {
     argv.add("-d");
     argv.add("--name");
     argv.add(require(NAME, "container name", spec.name()));
+    // docker-init (tini) as PID 1, so it reaps the orphans repo-controlled code leaves — otherwise
+    // each holds a pid against --pids-limit until the container exits.
+    if (spec.init()) {
+      argv.add("--init");
+    }
     for (String network : networks) {
       argv.add("--network");
       argv.add(require(NAME, "network", network));
