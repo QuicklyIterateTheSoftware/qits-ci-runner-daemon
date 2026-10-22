@@ -46,7 +46,7 @@
              the two providers the runner calls. Exact versions; test scope only. -->
         <qits.pact-consumer.version>2026.1019.82625</qits.pact-consumer.version>
         <qits.ci-golden-masters.version>2026.1018.180637</qits.ci-golden-masters.version>
-        <qits.idp-golden-masters.version>2026.1019.100619</qits.idp-golden-masters.version>
+        <qits.idp-golden-masters.version>2026.1021.194347</qits.idp-golden-masters.version>
 
         <!-- Where the platform publishes it. Overridden by CI (-Dqits.maven.repository.url), derived
              from QITS_DOMAIN; the default below is the public host. -->
