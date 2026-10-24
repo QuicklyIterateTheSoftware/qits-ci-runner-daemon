@@ -26,8 +26,8 @@ import java.util.regex.Pattern;
 /**
  * The node health check a {@code HealthCheck} frame asks for: qits-runner-javalib's {@link
  * HealthChecks} with its three defaults ({@code docker}, {@code nodeInventory}, {@code session}),
- * then CI's own ({@code buildkit}, {@code network}, {@code idRange}, {@code stepImage}), each run
- * under its own deadline so one hung probe fails by itself and the rest are still reported.
+ * then CI's own ({@code buildkit}, {@code network}, {@code stepImage}), each run under its own
+ * deadline so one hung probe fails by itself and the rest are still reported.
  *
  * <p><b>The CI checks are ArC beans</b> ({@link BuildkitCheck} and its siblings, each a
  * {@code @Singleton} with no constructor argument) that {@link Main} collects with {@code @All
@@ -55,7 +55,7 @@ public final class CiHealth {
 
   /** The CI checks' wire order; any other {@link RunnerHealthCheck} bean follows, by name. */
   public static final List<String> CI_ORDER =
-      List.of(BuildkitCheck.NAME, NetworkCheck.NAME, IdRangeCheck.NAME, StepImageCheck.NAME);
+      List.of(BuildkitCheck.NAME, NetworkCheck.NAME, StepImageCheck.NAME);
 
   /**
    * What the {@code stepImage} check is to look for.
@@ -124,7 +124,7 @@ public final class CiHealth {
 
   /** The CI checks constructed by hand, for a caller that is not ArC — the suite. */
   public static List<RunnerHealthCheck> builtIn() {
-    return List.of(new BuildkitCheck(), new NetworkCheck(), new IdRangeCheck(), new StepImageCheck());
+    return List.of(new BuildkitCheck(), new NetworkCheck(), new StepImageCheck());
   }
 
   /**

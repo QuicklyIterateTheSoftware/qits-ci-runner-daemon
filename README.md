@@ -176,7 +176,6 @@ itself and the rest are still reported:
 | `session` | `{connected, connectedSince, slots, held}` | the runner is connected (admitted by an `Ack`) |
 | `buildkit` | `{container, presence, state, stamp, configuredStamp, address, image, stateVolume}` | `qits-ci-runner-buildkitd` is running under the stamp the next build would start it with — or was never created, because no build on this node has needed it yet |
 | `network` | `{network, presence, driver, builder}` | the `qits-ci-runner` bridge exists — or is missing while no builder exists either ("not needed yet") |
-| `idRange` | `{idRange, fullIdRange, narrow}` | the user namespace maps the full uid/gid space; fails with the same words as the boot-time warning (a rootless docker or unprivileged LXC host maps too few; qits-ci then hands it no build step), unknown is ok |
 | `stepImage` | `{image, requested, present, pulled}`, plus `authRequired: true` on the one pull failure this check still calls ok | the step image is on the node, `docker pull` fetches it within 180 s, or the pull fails only because the registry wants a credential a run would bring |
 
 The first three are qits-runner-javalib's defaults (`qits-runner-toolkit`, `HealthChecks`), the rest
@@ -395,7 +394,7 @@ runner on the platform host (see above), so nothing here is exercised until that
 | `scripts/fixtures/runner-install.sh` | The reference implementation of the install contract. qits-ci-service's template (`service/src/main/resources/runner-install.sh.tmpl`) is written to match it exactly. |
 
 Inside `ci-runner/`, `Main` is the only CDI bean besides the node health checks (`BuildkitCheck`,
-`NetworkCheck`, `IdRangeCheck`, `StepImageCheck`, collected into `CiHealth`). It resolves configuration and news up plain classes:
+`NetworkCheck`, `StepImageCheck`, collected into `CiHealth`). It resolves configuration and news up plain classes:
 `RunnerMain` (the flow), `Registration` and `Bearer` (identity), `ControlSocket` (the connection),
 `Reservations` (slot arithmetic), `Launcher`/`RunnerArgv` (spec → `docker run`), `Reaper`,
 `BootSweep` and `LogTail` (removal, and a removed container's last output), `Telemetry` and
