@@ -180,33 +180,6 @@ class CiHealthChecksTest {
     assertFalse(run(new NetworkCheck()).ok());
   }
 
-  // --- idRange -----------------------------------------------------------------------------------
-
-  @Test
-  void theFullIdSpaceIsOk() throws Exception {
-    RunnerHealthCheck.Result result = new IdRangeCheck().run(ctx(WIDE, IMAGE));
-    assertTrue(result.ok(), result.detail());
-    assertEquals(Capabilities.FULL_ID_RANGE, result.data().get("idRange"));
-    assertEquals(false, result.data().get("narrow"));
-  }
-
-  @Test
-  void aNarrowRangeFailsWithTheBootWarningsWords() throws Exception {
-    Capabilities narrow = new Capabilities(true, "amd64", "linux", Map.of(), 65537L);
-    RunnerHealthCheck.Result result = new IdRangeCheck().run(ctx(narrow, IMAGE));
-    assertFalse(result.ok());
-    assertEquals(IdRange.narrowWarning(65537L), result.detail());
-    assertEquals(true, result.data().get("narrow"));
-  }
-
-  @Test
-  void anUnknownRangeIsOkAsTheHostAllowsIt() throws Exception {
-    Capabilities unknown = new Capabilities(true, "amd64", "linux", Map.of());
-    RunnerHealthCheck.Result result = new IdRangeCheck().run(ctx(unknown, IMAGE));
-    assertTrue(result.ok(), result.detail());
-    assertEquals(null, result.data().get("idRange"));
-  }
-
   // --- stepImage ---------------------------------------------------------------------------------
 
   @Test

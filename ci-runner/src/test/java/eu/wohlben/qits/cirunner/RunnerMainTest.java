@@ -212,10 +212,10 @@ class RunnerMainTest {
 
     assertEquals("req-7", answer.requestId());
     assertEquals(
-        List.of("docker", "nodeInventory", "session", "buildkit", "network", "idRange", "stepImage"),
+        List.of("docker", "nodeInventory", "session", "buildkit", "network", "stepImage"),
         answer.checks().stream().map(CheckResult::name).toList());
     assertTrue(answer.ok(), answer.detail());
-    assertEquals("all 7 checks passed", answer.detail());
+    assertEquals("all 6 checks passed", answer.detail());
     Map<String, Object> session = answer.checks().get(2).data();
     assertEquals(true, session.get("connected"));
     assertEquals(2L, ((Number) session.get("slots")).longValue());
@@ -241,7 +241,7 @@ class RunnerMainTest {
     assertFalse(answer.ok());
     assertEquals(null, answer.requestId());
     assertTrue(answer.detail().startsWith("docker: docker did not answer"), answer.detail());
-    assertEquals(7, answer.checks().size());
+    assertEquals(6, answer.checks().size());
     assertEquals(
         "registry.example/qits/build-images/ci-base:1",
         answer.checks().getLast().data().get("image"));

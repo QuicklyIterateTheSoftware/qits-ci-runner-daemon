@@ -33,7 +33,7 @@ class CiHealthTest {
     java.util.Collections.reverse(shuffled);
     assertEquals(
         List.of(
-            "docker", "nodeInventory", "session", "buildkit", "network", "idRange", "stepImage",
+            "docker", "nodeInventory", "session", "buildkit", "network", "stepImage",
             "aLaterCheck"),
         CiHealth.registry(Duration.ofSeconds(1), "r1", shuffled).names());
   }

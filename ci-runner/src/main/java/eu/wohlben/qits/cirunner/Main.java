@@ -103,10 +103,10 @@ public class Main {
 
     /**
      * CI's own node health checks ({@link BuildkitCheck}, {@link NetworkCheck}, {@link
-     * IdRangeCheck}, {@link StepImageCheck}, and any later {@code @Singleton} implementing {@link
-     * RunnerHealthCheck}). ArC resolves {@code @All} at build time, so the native image needs no
-     * reflection for it, and a bean injected here is used, so it is not removed as unused. ArC's
-     * order is not the wire's: {@link CiHealth#ordered} fixes it.
+     * StepImageCheck}, and any later {@code @Singleton} implementing {@link RunnerHealthCheck}).
+     * ArC resolves {@code @All} at build time, so the native image needs no reflection for it, and
+     * a bean injected here is used, so it is not removed as unused. ArC's order is not the wire's:
+     * {@link CiHealth#ordered} fixes it.
      */
     @Inject @All List<RunnerHealthCheck> healthChecks;
 
@@ -215,10 +215,6 @@ public class Main {
       java.util.logging.Logger.getLogger("").addHandler(telemetry);
       if (self.isPresent()) {
         LOG.infof("ci-runner %s is running in container %s", CiRunnerBinary.VERSION, self.get());
-      }
-      // After the telemetry handler, so the one line an operator must act on is shipped too.
-      if (capabilities.narrowIdRange()) {
-        LOG.warn(IdRange.narrowWarning(capabilities.idRange()));
       }
       if (!env.selfUpdate()) {
         LOG.infof(

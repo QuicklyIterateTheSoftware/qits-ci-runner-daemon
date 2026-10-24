@@ -60,14 +60,6 @@ class IdRangeTest {
   }
 
   @Test
-  void theWarningNamesTheRangeAndTheOperatorsFix() {
-    String warning = IdRange.narrowWarning(65536);
-    assertTrue(warning.contains("65536"), warning);
-    assertTrue(warning.contains("/etc/subuid") && warning.contains("/etc/subgid"), warning);
-    assertTrue(warning.contains("lxc.idmap"), warning);
-  }
-
-  @Test
   @EnabledOnOs(OS.LINUX)
   void thisProcessReadsItsOwnMaps() {
     assertTrue(IdRange.read(IdRange.PROC_SELF) > 0);

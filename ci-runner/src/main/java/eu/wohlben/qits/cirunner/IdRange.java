@@ -32,22 +32,6 @@ final class IdRange {
     return uids == null || gids == null ? null : Math.min(uids, gids);
   }
 
-  /**
-   * The operator's fix, in the words the warning uses — the runner cannot widen its own map: inside
-   * the namespace nothing can write the host's {@code /etc/subuid}, and an LXC idmap lives on the
-   * LXC host.
-   */
-  static String narrowWarning(long range) {
-    return "ci-runner's user namespace maps only "
-        + range
-        + " uids/gids (a full host maps "
-        + Capabilities.FULL_ID_RANGE
-        + "), so buildkit cannot unpack an image layer that owns a file above that id and qits-ci"
-        + " will not hand this runner a build step. Widen the range on this host: for rootless"
-        + " docker, the rootless user's entries in /etc/subuid and /etc/subgid (then restart its"
-        + " dockerd); for an unprivileged LXC, the container's lxc.idmap on the LXC host.";
-  }
-
   private static Long total(Path map) {
     String text;
     try {
