@@ -27,8 +27,14 @@ with no environment must exit 2) can.
 **A healthy runner never exits.** This is the one deliberate inversion of qits-ci-daemon's shape: a
 step daemon has one step and always exits; a runner is its host's reason to be on the platform, runs
 as a container under docker's `--restart=unless-stopped`, and reconnects forever. Every exit code in
-`ExitCode` is a reason `docker logs` should name. The one clean exit is a `Retire`, and it takes the
-container's restart policy away first.
+`ExitCode` is a reason `docker logs` should name. The clean exits are a `Retire` and a confirmed
+`invalid_client` streak, and both take the container's restart policy away first.
+
+**Only the host's word purges.** `Retire{kind: DELETED}` and the `1008 RUNNER_DELETED` close
+decommission (step containers, builder, network, volumes). A revoked credential — however long the
+token endpoint refuses the client — stops the runner like a plain `Retire` and removes nothing: an
+idp client disappears for reasons other than a deletion, and the workspaces runner reading one as
+its own deletion wiped a node (qits-1592). Never route a credential failure into `decommission`.
 
 **The runner is a container, and it replaces itself.** The released artifact is the image
 `<registry>/qits/qits-ci-runner:<version>` (the static binary plus a docker CLI); there is no

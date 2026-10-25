@@ -1106,19 +1106,74 @@ class RunnerMainTest {
     assertFalse(has(docker.calls(), List.of("update", "--restart=no", SELF)));
   }
 
+  private static final String INVALID_CLIENT =
+      "{\"error\":\"invalid_client\",\"error_description\":\"client authentication failed\"}";
+
+  /**
+   * Nothing a decommission would do, in {@code calls}: no container removed (step, builder or the
+   * runner's own), no volume or network removed, no helper started — qits-1592.
+   */
+  private void assertNothingRemoved(List<List<String>> calls) throws Exception {
+    String log = calls.toString();
+    assertFalse(calls.contains(DECOMMISSIONER_RUN), log);
+    for (List<String> call : calls.stream().map(FakeDocker::withoutConfig).toList()) {
+      assertFalse(!call.isEmpty() && call.getFirst().equals("rm"), "a container was removed: " + log);
+      assertFalse(
+          call.size() >= 2
+              && List.of("volume", "network").contains(call.get(0))
+              && List.of("rm", "remove", "prune").contains(call.get(1)),
+          "a volume or network was removed: " + log);
+      assertFalse(String.join(" ", call).contains("DECOMMISSION"), log);
+    }
+    assertTrue(Files.exists(state.resolve("client.json")), "the state is left as it is");
+  }
+
   @Test
-  void aTokenEndpointThatKeepsRefusingTheClientIsReadAsDeletedAfterTheStreak() throws Exception {
+  void aTokenEndpointThatKeepsRefusingTheClientStopsTheRunnerAndRemovesNothing() throws Exception {
     refusalConfirmMillis = 400;
     containerWithStateVolume();
     host.tokenStatus = 401;
-    host.tokenErrorBody = "{\"error\":\"invalid_client\",\"error_description\":\"client authentication failed\"}";
+    host.tokenErrorBody = INVALID_CLIENT;
     start("t", 10_000);
 
     assertEquals(ExitCode.OK, exit.get(15, TimeUnit.SECONDS));
     runner = null;
-    assertDecommissioned();
     assertTrue(host.tokenBodies.size() >= 3, "a streak, not one answer: " + host.tokenBodies.size());
     assertEquals(0, host.upgrades.get());
+    List<List<String>> calls = docker.calls();
+    assertTrue(has(calls, List.of("update", "--restart=no", SELF)), "it stays down: " + calls);
+    assertNothingRemoved(calls);
+  }
+
+  @Test
+  void aCredentialRevokedWhileHoldingARunLeavesItsStepsBuilderAndVolumesInPlace() throws Exception {
+    refusalConfirmMillis = 400;
+    containerWithStateVolume();
+    host.expiresIn = 1;
+    holdARun();
+    int before = docker.calls().size();
+    // Everything a purge would find, there to be found: the held run's step container, a stray
+    // under the runner's label, the node's builder, its state volume and the runner network.
+    docker.answer("ps", 0, "stepcontainer1\nbuildkitd1\n", "");
+    docker.answerFor("ps", "label=qits.ci.runner.run=run-a", 0, "stepcontainer1\n", "");
+    docker.answer("volume-ls", 0, BuildPlane.STATE_VOLUME + "\nqits-ci-runner-state-r1\n", "");
+    docker.answer("network-ls", 0, BuildPlane.NETWORK + "\n", "");
+
+    // The idp client is deleted (a cutover, say) and the socket drops; the cached bearer has
+    // expired by the redial, so every dial now mints into invalid_client.
+    host.tokenStatus = 401;
+    host.tokenErrorBody = INVALID_CLIENT;
+    Thread.sleep(1_100);
+    host.closeSocket(1001, "going away");
+
+    assertEquals(ExitCode.OK, exit.get(15, TimeUnit.SECONDS));
+    runner = null;
+    List<List<String>> after = docker.calls();
+    after = after.subList(before, after.size());
+    assertTrue(has(after, List.of("update", "--restart=no", SELF)), "it stays down: " + after);
+    assertNothingRemoved(after);
+    assertEquals(1, host.all(Reserve.class).size(), "a revoked runner takes no more work");
+    assertEquals(1, host.upgrades.get(), "and never connects again");
   }
 
   @Test

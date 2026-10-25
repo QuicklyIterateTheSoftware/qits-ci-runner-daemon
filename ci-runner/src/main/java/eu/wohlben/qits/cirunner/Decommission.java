@@ -40,6 +40,12 @@ import org.jboss.logging.Logger;
  * goes, not only this process's: a runner deleted half way through a rollover has two, and both are
  * equally dead.
  *
+ * <p><b>Only the host's own word starts it.</b> A {@code Retire{DELETED}} or the 1008 {@code
+ * RUNNER_DELETED} close, both of which say the runner is gone. A token endpoint refusing the
+ * client, however long, never does: a revoked credential is not proof of a deletion, and a node's
+ * whole build plane is too much to remove on a guess (qits-1592) — see {@link
+ * RunnerMain#onCredentialRevoked}.
+ *
  * <p><b>What survives a failure.</b> The restart policy goes before anything else can fail, so the
  * worst case is an exited container and a volume a person removes by hand — never a runner that
  * restarts and redials forever, which was the defect. A helper that fails stays, exited, with its

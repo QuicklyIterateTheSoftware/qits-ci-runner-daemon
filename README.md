@@ -302,12 +302,12 @@ If a removal fails (docker refuses an image still in use, say), the runner logs 
 ### Exit codes
 
 A healthy runner never exits; docker restarts it after any of these. The one clean exit, 0, is a
-runner retired by the CI (after an update, or a decommission), which takes its own restart policy away
-first.
+runner retired by the CI (after an update, or a decommission) or one whose credential was revoked,
+which takes its own restart policy away first.
 
 | Code | Meaning | What to do |
 |---|---|---|
-| 0 | Retired by the CI, or decommissioned because the runner was deleted. | Nothing — its successor, if any, is running; a deleted runner's container and volume are removed by its helper (see "Deleting a runner"). |
+| 0 | Retired by the CI, decommissioned because the runner was deleted, or stopped because the token endpoint kept refusing its credential. | Nothing — its successor, if any, is running; a deleted runner's container and volume are removed by its helper (see "Deleting a runner"). A revoked credential removes nothing: re-paste the install line to bring the runner back, or remove its containers and volumes by hand. |
 | 2 | A variable is missing or unparseable (the log line names it), or the runner is not registered and has no token. | Re-paste the install line. |
 | 3 | Registration could not reach the CI, or it answered 5xx. | Nothing — the restart is the retry. |
 | 4 | The CI speaks a protocol version this runner does not. | Re-paste the install line the CI currently hands out. |
@@ -449,11 +449,22 @@ takes the shared `qits-ci-runner-buildkitd` (see "Build steps" below) with it �
 state volume and the runner network — best-effort, on the way to removing the state volume.
 
 A runner that was offline when it was deleted finds out when it dials, and decommissions itself the
-same way. Two answers say it, and nothing else does: the CI closing the socket `1008
-RUNNER_DELETED` (the bearer is valid and no runner is registered with it), believed at once; or the
-token endpoint answering `invalid_client` on every dial for five minutes, believed only as that
-unbroken streak. A 5xx, an edge's 401, a refused connection, a timeout or any other close is the
-platform being down or restarting, and is redialled forever as before.
+same way. One answer says it, and nothing else does: the CI closing the socket `1008
+RUNNER_DELETED` (the bearer is valid and no runner is registered with it), believed at once.
+
+**A revoked credential is not a deletion, and purges nothing.** The token endpoint answering
+`invalid_client` on every dial for five minutes (believed only as that unbroken streak) says the
+runner can no longer sign in — which a deletion causes, but so does an idp client removed by a
+cutover, a migration or a restore. The runner then stops the way a plain `Retire` stops it: it
+reserves nothing more, leaves the runs it holds running, takes its own restart policy away and exits
+0, with one WARN line saying so. It removes nothing — no step container, no `qits-ci-runner-buildkitd`
+or its state volume, no runner network, no state volume, no `client.json`. Purging is explicit: a
+`Retire{kind: DELETED}` or the `1008 RUNNER_DELETED` close, or a person's `docker rm`. (qits-1592:
+the workspaces runner once read a revoked client as its own deletion and removed every workspace on
+its node.)
+
+A 5xx, an edge's 401, a refused connection, a timeout or any other close is the platform being down
+or restarting, and is redialled forever as before.
 
 **`Quarantined` and `Reinstated` are additive, not frozen.** A runner too old to know them drops
 them the same way — it still gets no work while quarantined, because the CI is the one answering

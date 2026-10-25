@@ -29,24 +29,27 @@ import org.jboss.logging.Logger;
  * by a connection that succeeds. Every reconnect mints its bearer first, so a token that expired
  * while the socket was up is replaced rather than presented.
  *
- * <p><b>Forever ends at one thing: the platform saying this runner no longer exists.</b> A runner
- * deleted while it was offline is never sent its {@code Retire}; it finds out on its next dial, and
- * would otherwise redial for as long as its host is up. Two answers say it, and only two:
+ * <p><b>Forever ends at two things, and only one of them is a deletion.</b>
  *
  * <ul>
  *   <li>qits-ci closes the socket 1008 {@link CloseReason#RUNNER_DELETED} — the host's own word that
- *       the bearer is valid and no runner is registered with it. Believed at once.
+ *       the bearer is valid and no runner is registered with it. Believed at once, and told to the
+ *       listener as {@link Listener#onDeleted}: the runner purges.
  *   <li>the token endpoint refuses the client with {@code invalid_client} ({@link
- *       Bearer.ClientRefused}) — what a deleted runner's revoked client gets. Believed only as a
- *       streak: every dial for at least {@link Settings#refusalConfirmMillis} and at least {@link
- *       Settings#refusalConfirmAttempts} dials, with nothing else in between, since one such answer
- *       could be an idp that is not ready yet.
+ *       Bearer.ClientRefused}). Believed only as a streak: every dial for at least {@link
+ *       Settings#refusalConfirmMillis} and at least {@link Settings#refusalConfirmAttempts} dials,
+ *       with nothing else in between, since one such answer could be an idp that is not ready yet.
+ *       Told to the listener as {@link Listener#onCredentialRevoked}, <b>never as a deletion</b>: a
+ *       revoked client says only that this runner can no longer sign in — a person deleting the
+ *       runner, but equally an idp client removed by a migration, a cutover or a restore — and the
+ *       runner stops without removing anything (qits-1592: the workspaces runner read exactly that
+ *       as its own deletion on 2026-10-24 and wiped every workspace on its node).
  * </ul>
  *
  * Everything else — a 502 from the edge, a refused connection, a timeout, a 401 on the upgrade, a
  * 5xx from the idp, any other close — is the platform being down or restarting, breaks a streak, and
- * is retried as it always was. On either answer the socket stops for good and tells its listener
- * {@link Listener#onDeleted}.
+ * is retried as it always was. On either answer the socket stops for good before it tells its
+ * listener.
  */
 public final class ControlSocket {
 
@@ -65,10 +68,18 @@ public final class ControlSocket {
     void onClosed();
 
     /**
-     * The platform said this runner no longer exists (see the class javadoc). The socket has stopped
-     * for good and will not redial; {@code why} is for the log.
+     * The host said this runner no longer exists — the 1008 {@link CloseReason#RUNNER_DELETED} close
+     * (see the class javadoc). The socket has stopped for good and will not redial; {@code why} is
+     * for the log.
      */
     default void onDeleted(String why) {}
+
+    /**
+     * The token endpoint has refused this runner's client for the whole confirmation streak (see the
+     * class javadoc): its credential is revoked. Not a deletion — the owner stops and removes
+     * nothing. The socket has stopped for good and will not redial; {@code why} is for the log.
+     */
+    default void onCredentialRevoked(String why) {}
 
     /**
      * A {@code Heartbeat} was written on a connected socket — the periodic proof this runner is
@@ -158,7 +169,7 @@ public final class ControlSocket {
         .onSuccess(this::onConnected)
         .onFailure(
             t -> {
-              if (confirmsDeletion(t)) {
+              if (confirmsRevocation(t)) {
                 return;
               }
               long backoff = backoffFor(attempt);
@@ -172,9 +183,9 @@ public final class ControlSocket {
   /**
    * Count a failed dial toward the {@code invalid_client} streak, or break the streak; true when the
    * streak is now long enough to believe, in which case the socket has stopped and the listener has
-   * been told.
+   * been told its credential is revoked.
    */
-  private boolean confirmsDeletion(Throwable failure) {
+  private boolean confirmsRevocation(Throwable failure) {
     if (!(failure instanceof Bearer.ClientRefused refused)) {
       refusedSinceMillis = 0;
       refusals = 0;
@@ -189,11 +200,11 @@ public final class ControlSocket {
     if (refusals < settings.refusalConfirmAttempts() || lasted < settings.refusalConfirmMillis()) {
       LOG.warnf(
           "ci-runner's client was refused (%s), %d time(s) in a row over %ds; if it goes on for"
-              + " %ds this runner reads itself as deleted",
+              + " %ds this runner stops (and removes nothing)",
           refused.getMessage(), refusals, lasted / 1000, settings.refusalConfirmMillis() / 1000);
       return false;
     }
-    deleted(
+    revoked(
         "the token endpoint has refused this runner's client for "
             + lasted / 1000
             + "s ("
@@ -203,13 +214,22 @@ public final class ControlSocket {
     return true;
   }
 
-  /** The platform said this runner is gone: stop for good, then say so. Once. */
+  /** The host said this runner is gone: stop for good, then say so. Once. */
   private void deleted(String why) {
     if (stopped) {
       return;
     }
     stop();
     listener.onDeleted(why);
+  }
+
+  /** This runner's credential is refused for good: stop for good, then say so. Once. */
+  private void revoked(String why) {
+    if (stopped) {
+      return;
+    }
+    stop();
+    listener.onCredentialRevoked(why);
   }
 
   long backoffFor(int attempt) {
