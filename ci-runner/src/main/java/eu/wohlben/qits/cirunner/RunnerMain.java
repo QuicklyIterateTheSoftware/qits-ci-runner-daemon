@@ -42,8 +42,13 @@ import org.jboss.logging.Logger;
  *
  * <p><b>A deleted runner decommissions itself</b> ({@link #decommission}): told so by a {@code
  * Retire} of kind {@code DELETED} while connected, or by {@link ControlSocket.Listener#onDeleted}
- * when it finds out on a dial. It takes no more work, cancels what it holds, sweeps its step
- * containers, and hands its container and state volume to {@link Decommission}.
+ * — the host's 1008 {@code RUNNER_DELETED} close — when it finds out on a dial. It takes no more
+ * work, cancels what it holds, sweeps its step containers, and hands its container and state volume
+ * to {@link Decommission}.
+ *
+ * <p><b>A revoked credential is not a deletion</b> ({@link #onCredentialRevoked}): a token endpoint
+ * that keeps refusing the client stops the runner the way a plain {@code Retire} does — no more
+ * work, no restart, exit 0 — and removes nothing. Only the host's own word purges (qits-1592).
  *
  * <p><b>qits-ci keeps the run; the runner keeps the containers.</b> Nothing here knows what a step
  * is for, how many a run has or whether one passed — qits-ci drives each run and the step's own
@@ -189,8 +194,11 @@ public final class RunnerMain implements ControlSocket.Listener {
   private volatile Instant connectedSince;
   private volatile Rollover rollover;
 
-  /** Set once, by the first of the ways a runner learns it was deleted. */
-  private final java.util.concurrent.atomic.AtomicBoolean decommissioning =
+  /**
+   * Set once, by the first of the ways a runner learns it must stop for good: deleted (it purges)
+   * or its credential revoked (it purges nothing).
+   */
+  private final java.util.concurrent.atomic.AtomicBoolean ending =
       new java.util.concurrent.atomic.AtomicBoolean();
 
   /**
@@ -391,7 +399,7 @@ public final class RunnerMain implements ControlSocket.Listener {
           try {
             rollover.removePredecessors();
           } finally {
-            if (parts.housekeeping() != null && !decommissioning.get()) {
+            if (parts.housekeeping() != null && !ending.get()) {
               parts.housekeeping().start(reservations::held);
             }
           }
@@ -436,6 +444,51 @@ public final class RunnerMain implements ControlSocket.Listener {
   }
 
   /**
+   * The token endpoint refused this runner's client for the whole streak. That is not the host
+   * saying the runner was deleted: an idp client goes away for reasons of its own — a cutover that
+   * deletes the old clients at boot (qits-1544), a migration, a restore — and a runner that purged
+   * on it would take every step container, the node's builder and its cache, and its own state with
+   * it (qits-1592, after the workspaces runner did exactly that on 2026-10-24). So it ends the way a
+   * plain {@code Retire} does: at once, on the loop, not one more {@code Reserve} and no successor;
+   * then, off the loop, no restart for this container and exit 0. The runs it holds are left
+   * running, as a plain retirement leaves them — the host fails them on its side — and nothing
+   * under this runner's label, no network, builder or volume is removed. Purging stays an explicit
+   * act: a {@code Retire{DELETED}} or the 1008 close, or a person's {@code docker rm}.
+   */
+  @Override
+  public void onCredentialRevoked(String why) {
+    if (!ending.compareAndSet(false, true)) {
+      return;
+    }
+    LOG.warnf(
+        "ci-runner's credential was revoked (%s); it stops and removes nothing — its step"
+            + " containers, builder, network and volumes stay as they are. Purging it takes an"
+            + " explicit retire (Retire DELETED from the CI) or removing them by hand",
+        why);
+    reservations.drain();
+    Rollover r = rollover;
+    if (r != null) {
+      r.shutdown();
+    }
+    if (parts.housekeeping() != null) {
+      parts.housekeeping().shutdown();
+    }
+    workers.execute(
+        () -> {
+          try {
+            if (r != null) {
+              r.leave();
+            }
+          } catch (RuntimeException e) {
+            LOG.warnf("ci-runner could not take its own restart policy away: %s", e.getMessage());
+          } finally {
+            LOG.info("ci-runner exits: its credential was revoked");
+            exit.complete(ExitCode.OK);
+          }
+        });
+  }
+
+  /**
    * This runner was deleted. On the loop, at once: not one more {@code Reserve}, and no redial —
    * the host is about to close the socket, and a dial could only mint on a revoked client. Then,
    * off the loop: every held run's containers removed (the host fails a deleted runner's runs on
@@ -443,7 +496,7 @@ public final class RunnerMain implements ControlSocket.Listener {
    * {@link Decommission#leave}, and exit 0.
    */
   private void decommission(String why) {
-    if (!decommissioning.compareAndSet(false, true)) {
+    if (!ending.compareAndSet(false, true)) {
       return;
     }
     LOG.warnf("ci-runner decommissions itself: %s", why);
